@@ -1,0 +1,13 @@
+bigip:
+  host: "192.168.1.245"
+  username: "admin"
+  # password: from env var BIGIP_PASS or interactive prompt
+  verify_ssl: false
+
+audit:
+  baseline_policy: "./baseline/corporate_baseline.xml"
+  output_dir: "./output"
+  report_format: "both"       # html, markdown, both
+  export_format: "xml"
+  concurrent_exports: 3
+  partitions: []              # empty = all partitions

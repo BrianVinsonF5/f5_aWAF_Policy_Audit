@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<policy>
+  <name>baseline_policy</name>
+  <full-path>/Common/baseline_policy</full-path>
+  <description>Corporate baseline WAF policy</description>
+  <created-at>2025-01-01T00:00:00Z</created-at>
+  <updated-at>2025-06-01T00:00:00Z</updated-at>
+
+  <general>
+    <enforcement-mode>blocking</enforcement-mode>
+    <signature-staging>false</signature-staging>
+    <placeholder-signatures>false</placeholder-signatures>
+    <response-logging>none</response-logging>
+    <trust-xff>false</trust-xff>
+    <mask-credit-card-numbers>true</mask-credit-card-numbers>
+    <enforcement-readiness-period>7</enforcement-readiness-period>
+    <allowed-response-code>200</allowed-response-code>
+    <allowed-response-code>301</allowed-response-code>
+    <allowed-response-code>302</allowed-response-code>
+    <allowed-response-code>404</allowed-response-code>
+  </general>
+
+  <blocking-settings>
+    <violation>
+      <name>VIOL_ASM_COOKIE_MODIFIED</name>
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>true</learn>
+    </violation>
+    <violation>
+      <name>VIOL_ATTACK_SIGNATURE</name>
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>true</learn>
+    </violation>
+    <violation>
+      <name>VIOL_COOKIE_MODIFIED</name>
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>false</learn>
+    </violation>
+    <evasion>
+      <name>Bad unescape</name>
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>false</learn>
+    </evasion>
+    <http-protocol>
+      <name>Unparsable request content</name>
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>false</learn>
+    </http-protocol>
+  </blocking-settings>
+
+  <attack-signatures>
+    <signature>
+      <signature-id>200001470</signature-id>
+      <enabled>true</enabled>
+      <perform-staging>false</perform-staging>
+      <in-policy>true</in-policy>
+    </signature>
+    <signature>
+      <signature-id>200001471</signature-id>
+      <enabled>true</enabled>
+      <perform-staging>false</perform-staging>
+      <in-policy>true</in-policy>
+    </signature>
+    <signature>
+      <signature-id>200002170</signature-id>
+      <enabled>true</enabled>
+      <perform-staging>false</perform-staging>
+      <in-policy>true</in-policy>
+    </signature>
+  </attack-signatures>
+
+  <signature-sets>
+    <signature-set>
+      <name>Generic Detection Signatures</name>
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>true</learn>
+      <type>filter-based</type>
+    </signature-set>
+    <signature-set>
+      <name>SQL Injection Signatures</name>
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>true</learn>
+      <type>filter-based</type>
+    </signature-set>
+  </signature-sets>
+
+  <urls>
+    <url>
+      <name>/login</name>
+      <protocol>http</protocol>
+      <type>explicit</type>
+      <is-allowed>true</is-allowed>
+      <attack-signatures-check>true</attack-signatures-check>
+      <metachars-on-url-check>true</metachars-on-url-check>
+    </url>
+    <url>
+      <name>/api/*</name>
+      <protocol>http</protocol>
+      <type>wildcard</type>
+      <is-allowed>true</is-allowed>
+      <attack-signatures-check>true</attack-signatures-check>
+      <metachars-on-url-check>true</metachars-on-url-check>
+    </url>
+  </urls>
+
+  <filetypes>
+    <filetype>
+      <name>php</name>
+      <allowed>true</allowed>
+      <response-check>true</response-check>
+      <type>explicit</type>
+    </filetype>
+    <filetype>
+      <name>exe</name>
+      <allowed>false</allowed>
+      <response-check>false</response-check>
+      <type>explicit</type>
+    </filetype>
+  </filetypes>
+
+  <parameters>
+    <parameter>
+      <name>username</name>
+      <type>explicit</type>
+      <level>global</level>
+      <parameter-location>query</parameter-location>
+      <value-type>user-input</value-type>
+      <allow-empty-value>false</allow-empty-value>
+      <attack-signatures-check>true</attack-signatures-check>
+      <check-metachars>true</check-metachars>
+      <sensitive>false</sensitive>
+    </parameter>
+    <parameter>
+      <name>password</name>
+      <type>explicit</type>
+      <level>global</level>
+      <parameter-location>form-data</parameter-location>
+      <value-type>user-input</value-type>
+      <allow-empty-value>false</allow-empty-value>
+      <attack-signatures-check>true</attack-signatures-check>
+      <check-metachars>true</check-metachars>
+      <sensitive>true</sensitive>
+    </parameter>
+  </parameters>
+
+  <headers>
+    <header>
+      <name>Content-Type</name>
+      <type>explicit</type>
+      <mandatory>true</mandatory>
+      <check-signatures>true</check-signatures>
+    </header>
+  </headers>
+
+  <cookies>
+    <cookie>
+      <name>session_id</name>
+      <type>explicit</type>
+      <enforcement-type>allow</enforcement-type>
+      <insert-same-site-attribute>strict</insert-same-site-attribute>
+      <decode-value-as-base64>disabled</decode-value-as-base64>
+    </cookie>
+  </cookies>
+
+  <methods>
+    <method>
+      <name>GET</name>
+      <act-as-method>GET</act-as-method>
+    </method>
+    <method>
+      <name>POST</name>
+      <act-as-method>POST</act-as-method>
+    </method>
+  </methods>
+
+  <data-guard>
+    <enabled>true</enabled>
+    <credit-card-numbers>true</credit-card-numbers>
+    <us-social-security-numbers>true</us-social-security-numbers>
+    <enforcement-mode>ignore-urls-in-list</enforcement-mode>
+  </data-guard>
+
+  <ip-intelligence>
+    <enabled>true</enabled>
+    <ip-intelligence-categories>
+      <ip-intelligence-category>
+        <category>BotNets</category>
+        <alarm>true</alarm>
+        <block>true</block>
+      </ip-intelligence-category>
+      <ip-intelligence-category>
+        <category>Scanners</category>
+        <alarm>true</alarm>
+        <block>false</block>
+      </ip-intelligence-category>
+    </ip-intelligence-categories>
+  </ip-intelligence>
+
+  <bot-defense>
+    <enabled>true</enabled>
+    <browser-verification>challenge</browser-verification>
+  </bot-defense>
+
+  <whitelist-ips>
+    <whitelist-ip>
+      <ip-address>10.0.0.1</ip-address>
+      <ip-mask>255.255.255.255</ip-mask>
+      <trusted-by-policy-builder>true</trusted-by-policy-builder>
+      <ignore-anomalies>false</ignore-anomalies>
+      <ignore-ip-reputation>false</ignore-ip-reputation>
+    </whitelist-ip>
+  </whitelist-ips>
+</policy>
