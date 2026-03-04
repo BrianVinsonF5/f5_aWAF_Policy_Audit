@@ -3,18 +3,24 @@
   Deliberately modified target policy for testing the comparison engine.
   Known diffs vs baseline_policy.xml:
     CRITICAL:
-      1. general.enforcementMode: transparent (was blocking)
-      2. blocking-settings.violations.VIOL_ASM_COOKIE_MODIFIED: block=false (was true)
-      3. attack-signatures.200001470: enabled=false (was true)
-      4. data-guard: enabled=false (was true)
-      5. bot-defense: enabled=false (was true)
+      1.  general.enforcementMode: transparent (was blocking)
+      2.  blocking-settings.violations.VIOL_ASM_COOKIE_MODIFIED: block=false (was true)
+      3.  attack-signatures.200001470: enabled=false (was true)
+      4.  data-guard: enabled=false (was true)
+      5.  bot-defense: enabled=false (was true)
+      6.  blocking.enforcement_mode: transparent (was blocking)
+      7.  blocking.RESPONSE_SCRUBBING: block=false (was true)
+      8.  blocking.REQUEST_TOO_LONG: block=false (was true)
+      9.  blocking.VIRUS_DETECTED: block=false (was true)
     WARNING:
-      6. signature-sets.SQL Injection Signatures: block=false (was true)
-      7. attack-signatures.200001471: performStaging=true (was false)
-      8. urls./login: attackSignaturesCheck=false (was true)
-      9. whitelist-ips: 192.168.99.99 (extra, not in baseline)
+      10. signature-sets.SQL Injection Signatures: block=false (was true)
+      11. attack-signatures.200001471: performStaging=true (was false)
+      12. urls./login: attackSignaturesCheck=false (was true)
+      13. whitelist-ips: 192.168.99.99 (extra, not in baseline)
+      14. blocking.REQUEST_TOO_LONG: alarm=false (was true)
+      15. blocking.VIRUS_DETECTED: learn changed (was false, now true)
     INFO:
-      10. whitelist-ips: 10.0.0.1 missing from target
+      16. whitelist-ips: 10.0.0.1 missing from target
 -->
 <policy>
   <name>target_policy_drifted</name>
@@ -36,6 +42,54 @@
     <allowed-response-code>302</allowed-response-code>
     <allowed-response-code>404</allowed-response-code>
   </general>
+
+  <!-- Drifted <blocking> section: enforcement_mode downgraded + several violations weakened -->
+  <blocking>
+    <enforcement_mode>transparent</enforcement_mode>
+    <passive_mode>disabled</passive_mode>
+    <violation name="Illegal attachment in SOAP message" id="ILLEGAL_SOAP_ATTACHMENT">
+      <alarm>false</alarm>
+      <block>false</block>
+      <learn>false</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Data Guard: Information leakage detected" id="RESPONSE_SCRUBBING">
+      <alarm>true</alarm>
+      <block>false</block><!-- DRIFTED: was true → CRITICAL -->
+      <learn>true</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Login URL expired" id="PARSER_EXPIRED_INGRESS_OBJECT">
+      <alarm>false</alarm>
+      <block>false</block>
+      <learn>false</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Login URL bypassed" id="ILLEGAL_INGRESS_OBJECT">
+      <alarm>false</alarm>
+      <block>false</block>
+      <learn>false</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Request length exceeds defined buffer size" id="REQUEST_TOO_LONG">
+      <alarm>false</alarm><!-- DRIFTED: was true → WARNING -->
+      <block>false</block><!-- DRIFTED: was true → CRITICAL -->
+      <learn>true</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Virus detected" id="VIRUS_DETECTED">
+      <alarm>true</alarm>
+      <block>false</block><!-- DRIFTED: was true → CRITICAL -->
+      <learn>true</learn><!-- DRIFTED: was false → WARNING -->
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Evasion technique detected" id="EVASION_DETECTED">
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>true</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+  </blocking>
 
   <blocking-settings>
     <violation>

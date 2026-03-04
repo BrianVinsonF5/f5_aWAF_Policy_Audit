@@ -27,6 +27,7 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
     _md_header(lines, result)
     _md_summary_table(lines, result)
     _md_findings(lines, result)
+    _md_blocking_comparison(lines, result)
     _md_violations_table(lines, result)
     _md_extra_missing(lines, result)
 
@@ -98,19 +99,84 @@ def _md_findings(lines: List[str], result: ComparisonResult) -> None:
 def _md_violations_table(lines: List[str], result: ComparisonResult) -> None:
     if not result.violations:
         return
+
+    # Detect whether violations come from the richer <blocking> section (have 'id')
+    has_id = any(v.get("id") for v in result.violations)
+
+    lines += ["## WAF Violations Status", ""]
+
+    if has_id:
+        lines += [
+            "| ID | Violation Name | Alarm | Block | Learn | PB Tracking |",
+            "|----|----------------|:-----:|:-----:|:-----:|:-----------:|",
+        ]
+        for v in sorted(result.violations, key=lambda x: x.get("id", x.get("name", ""))):
+            pb = human_bool(v.get("policyBuilderTracking", False))
+            lines.append(
+                f"| `{v.get('id', '')}` "
+                f"| {v.get('name', '')} "
+                f"| {human_bool(v.get('alarm', False))} "
+                f"| {human_bool(v.get('block', False))} "
+                f"| {human_bool(v.get('learn', False))} "
+                f"| {pb} |"
+            )
+    else:
+        lines += [
+            "| Violation | Alarm | Block | Learn |",
+            "|-----------|:-----:|:-----:|:-----:|",
+        ]
+        for v in sorted(result.violations, key=lambda x: x.get("name", "")):
+            lines.append(
+                f"| {v.get('name', '')} "
+                f"| {human_bool(v.get('alarm', False))} "
+                f"| {human_bool(v.get('block', False))} "
+                f"| {human_bool(v.get('learn', False))} |"
+            )
+
+    lines.append("")
+
+
+def _md_blocking_comparison(lines: List[str], result: ComparisonResult) -> None:
+    """Render a side-by-side baseline-vs-target table for <blocking> violations."""
+    blocking_diffs = [d for d in result.diffs if d.section == "blocking"]
+    if not blocking_diffs and not result.violations:
+        return
+
+    # Build a map of violation id → list of diff attributes for quick lookup
+    diff_by_id: dict = {}
+    for d in blocking_diffs:
+        if d.element_name not in ("enforcement_mode",):
+            diff_by_id.setdefault(d.element_name, []).append(d)
+
     lines += [
-        "## WAF Violations Status",
+        "## Blocking Section — Violations Comparison",
         "",
-        "| Violation | Enabled | Learn | Alarm | Block |",
-        "|-----------|:-------:|:-----:|:-----:|:-----:|",
+        "Compares each violation's Alarm / Block / Learn flags against the baseline.",
+        "Cells marked with ⚠ differ from baseline; 🚨 indicates a critical security gap.",
+        "",
+        "| ID | Violation Name | Attr | Baseline | Target | Severity |",
+        "|----|----------------|------|:--------:|:------:|----------|",
     ]
-    for v in sorted(result.violations, key=lambda x: x.get("name", "")):
+
+    if not blocking_diffs:
+        lines += ["| — | *(no differences detected)* | — | — | — | — |", ""]
+        return
+
+    for d in blocking_diffs:
+        icon = "🚨" if d.severity == SEVERITY_CRITICAL else "⚠"
+        name = d.element_name
+        # Try to resolve display name from violations list
+        for v in result.violations:
+            if (v.get("id") or v.get("name")) == d.element_name:
+                name = v.get("name", d.element_name)
+                break
         lines.append(
-            f"| {v.get('name', '')} "
-            f"| {human_bool(v.get('enabled', True))} "
-            f"| {human_bool(v.get('learn', False))} "
-            f"| {human_bool(v.get('alarm', False))} "
-            f"| {human_bool(v.get('block', False))} |"
+            f"| `{d.element_name}` "
+            f"| {name} "
+            f"| `{d.attribute}` "
+            f"| {human_bool(d.baseline_value)} "
+            f"| {human_bool(d.target_value)} "
+            f"| {icon} {d.severity.upper()} |"
         )
     lines.append("")
 
@@ -239,6 +305,15 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         parts.append(_html_findings_table(items))
         parts.append("</div></details>")
 
+    # Blocking violations comparison table
+    blocking_diffs = [d for d in result.diffs if d.section == "blocking"]
+    if blocking_diffs or result.violations:
+        parts.append("<h2>Blocking Section — Violations Comparison</h2>")
+        parts.append(
+            "<p>Each violation's Alarm / Block / Learn flags compared against the baseline.</p>"
+        )
+        parts.append(_html_blocking_comparison_table(blocking_diffs, result.violations))
+
     # WAF Violations status table
     if result.violations:
         parts.append("<h2>WAF Violations Status</h2>")
@@ -317,29 +392,89 @@ def _html_findings_table(diffs: List[DiffItem]) -> str:
     )
 
 
-def _html_violations_table(violations: List[dict]) -> str:
-    rows = []
-    for v in sorted(violations, key=lambda x: x.get("name", "")):
-        def _badge(val: bool) -> str:
-            cls = "pass" if val else "fail"
-            label = "Enabled" if val else "Disabled"
-            return f"<span class='badge badge-{cls}'>{label}</span>"
+def _html_blocking_comparison_table(diffs: List[DiffItem], violations: List[dict]) -> str:
+    """
+    Render a side-by-side baseline-vs-target HTML table for <blocking> violations.
+    Each row shows a single attribute difference for a specific violation id.
+    """
+    # Build id → display name lookup from violations list
+    id_to_name = {}
+    for v in violations:
+        vid = v.get("id") or v.get("name", "")
+        id_to_name[vid] = v.get("name", vid)
 
+    if not diffs:
+        return "<p><em>No differences detected in the blocking violations section.</em></p>"
+
+    rows = []
+    for d in diffs:
+        sev_cls = d.severity
+        badge = f"<span class='badge badge-{_e(sev_cls)}'>{_e(d.severity.upper())}</span>"
+        display_name = id_to_name.get(d.element_name, d.element_name)
         rows.append(
             f"<tr>"
-            f"<td>{_e(v.get('name', ''))}</td>"
-            f"<td>{_badge(v.get('enabled', True))}</td>"
-            f"<td>{_badge(v.get('learn', False))}</td>"
-            f"<td>{_badge(v.get('alarm', False))}</td>"
-            f"<td>{_badge(v.get('block', False))}</td>"
+            f"<td><code>{_e(d.element_name)}</code></td>"
+            f"<td>{_e(display_name)}</td>"
+            f"<td><code>{_e(d.attribute)}</code></td>"
+            f"<td>{_e(human_bool(d.baseline_value))}</td>"
+            f"<td>{_e(human_bool(d.target_value))}</td>"
+            f"<td>{_e(d.description)}</td>"
+            f"<td>{badge}</td>"
             f"</tr>"
         )
     return (
         "<table class='findings'>"
         "<thead><tr>"
-        "<th>Violation</th><th>Enabled</th><th>Learn</th><th>Alarm</th><th>Block</th>"
+        "<th>Violation ID</th><th>Name</th><th>Attribute</th>"
+        "<th>Baseline</th><th>Target</th><th>Description</th><th>Severity</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
     )
+
+
+def _html_violations_table(violations: List[dict]) -> str:
+    has_id = any(v.get("id") for v in violations)
+    rows = []
+
+    def _flag_badge(val: bool) -> str:
+        cls = "pass" if val else "fail"
+        label = "Yes" if val else "No"
+        return f"<span class='badge badge-{cls}'>{label}</span>"
+
+    if has_id:
+        for v in sorted(violations, key=lambda x: x.get("id", x.get("name", ""))):
+            rows.append(
+                f"<tr>"
+                f"<td><code>{_e(v.get('id', ''))}</code></td>"
+                f"<td>{_e(v.get('name', ''))}</td>"
+                f"<td>{_flag_badge(v.get('alarm', False))}</td>"
+                f"<td>{_flag_badge(v.get('block', False))}</td>"
+                f"<td>{_flag_badge(v.get('learn', False))}</td>"
+                f"<td>{_flag_badge(v.get('policyBuilderTracking', False))}</td>"
+                f"</tr>"
+            )
+        return (
+            "<table class='findings'>"
+            "<thead><tr>"
+            "<th>ID</th><th>Violation Name</th>"
+            "<th>Alarm</th><th>Block</th><th>Learn</th><th>PB Tracking</th>"
+            "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+        )
+    else:
+        for v in sorted(violations, key=lambda x: x.get("name", "")):
+            rows.append(
+                f"<tr>"
+                f"<td>{_e(v.get('name', ''))}</td>"
+                f"<td>{_flag_badge(v.get('alarm', False))}</td>"
+                f"<td>{_flag_badge(v.get('block', False))}</td>"
+                f"<td>{_flag_badge(v.get('learn', False))}</td>"
+                f"</tr>"
+            )
+        return (
+            "<table class='findings'>"
+            "<thead><tr>"
+            "<th>Violation</th><th>Alarm</th><th>Block</th><th>Learn</th>"
+            "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+        )
 
 
 # ── Summary report ─────────────────────────────────────────────────────────────

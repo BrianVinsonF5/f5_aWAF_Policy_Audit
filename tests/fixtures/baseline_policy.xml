@@ -20,6 +20,57 @@
     <allowed-response-code>404</allowed-response-code>
   </general>
 
+  <!--
+    Newer <blocking> section format used by some AWAF export versions.
+    Violations are identified by machine-readable 'id' attributes.
+  -->
+  <blocking>
+    <enforcement_mode>blocking</enforcement_mode>
+    <passive_mode>disabled</passive_mode>
+    <violation name="Illegal attachment in SOAP message" id="ILLEGAL_SOAP_ATTACHMENT">
+      <alarm>false</alarm>
+      <block>false</block>
+      <learn>false</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Data Guard: Information leakage detected" id="RESPONSE_SCRUBBING">
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>true</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Login URL expired" id="PARSER_EXPIRED_INGRESS_OBJECT">
+      <alarm>false</alarm>
+      <block>false</block>
+      <learn>false</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Login URL bypassed" id="ILLEGAL_INGRESS_OBJECT">
+      <alarm>false</alarm>
+      <block>false</block>
+      <learn>false</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Request length exceeds defined buffer size" id="REQUEST_TOO_LONG">
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>true</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Virus detected" id="VIRUS_DETECTED">
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>false</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+    <violation name="Evasion technique detected" id="EVASION_DETECTED">
+      <alarm>true</alarm>
+      <block>true</block>
+      <learn>true</learn>
+      <policy_builder_tracking>enabled</policy_builder_tracking>
+    </violation>
+  </blocking>
+
   <blocking-settings>
     <violation>
       <name>VIOL_ASM_COOKIE_MODIFIED</name>

@@ -128,6 +128,62 @@ def _parse_blocking_settings(root) -> Dict:
     }
 
 
+def _parse_blocking_violation(el) -> Dict:
+    """
+    Parse a <violation> element from the newer <blocking> section format.
+
+    In this format violations carry both a human-readable 'name' attribute and a
+    machine-readable 'id' attribute (e.g. id="ILLEGAL_SOAP_ATTACHMENT").  The 'id'
+    is the stable key used for comparison; 'name' is kept for display purposes.
+    """
+    pb_raw = _text(el, "policy_builder_tracking") or _text(el, "policy-builder-tracking")
+    return {
+        "id":                     el.get("id", ""),
+        "name":                   el.get("name", "") or _text(el, "name"),
+        "alarm":                  _item_as_bool(el, "alarm"),
+        "block":                  _item_as_bool(el, "block"),
+        "learn":                  _item_as_bool(el, "learn"),
+        "policyBuilderTracking":  _bool(pb_raw) if pb_raw else False,
+    }
+
+
+def _parse_blocking(root) -> Dict:
+    """
+    Parse the newer <blocking> section exported by some F5 AWAF versions.
+
+    Schema (abridged)::
+
+        <blocking>
+          <enforcement_mode>transparent|blocking</enforcement_mode>
+          <passive_mode>enabled|disabled</passive_mode>
+          <violation name="Human Name" id="MACHINE_ID">
+            <alarm>true|false</alarm>
+            <block>true|false</block>
+            <learn>true|false</learn>
+            <policy_builder_tracking>enabled|disabled</policy_builder_tracking>
+          </violation>
+          ...
+        </blocking>
+
+    Returns a dict with keys: enforcement_mode, passive_mode, violations (list).
+    Returns an empty dict when the section is absent.
+    """
+    bl = _find(root, "blocking")
+    if bl is None:
+        return {}
+
+    em_raw  = _text(bl, "enforcement_mode") or _text(bl, "enforcement-mode")
+    pm_raw  = _text(bl, "passive_mode") or _text(bl, "passive-mode")
+
+    return {
+        "enforcement_mode": em_raw or "transparent",
+        "passive_mode":     pm_raw or "disabled",
+        "violations": [
+            _parse_blocking_violation(v) for v in _findall(bl, "violation")
+        ],
+    }
+
+
 def _parse_attack_signatures(root) -> List[Dict]:
     sigs_el = _find(root, "attack-signatures")
     if sigs_el is None:
@@ -465,6 +521,7 @@ def parse_policy(xml_path: str) -> Dict:
     return {
         "general":             _parse_general(root),
         "blocking-settings":   _parse_blocking_settings(root),
+        "blocking":            _parse_blocking(root),
         "attack-signatures":   _parse_attack_signatures(root),
         "signature-sets":      _parse_signature_sets(root),
         "urls":                _parse_urls(root),
