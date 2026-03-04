@@ -106,11 +106,14 @@ def _parse_general(root) -> Dict:
 
 
 def _parse_blocking_item(el) -> Dict:
+    # enabled: check XML attribute first, then child element; default True if absent
+    enabled_raw = el.get("enabled") or _text(el, "enabled")
     return {
-        "name":  el.get("name") or _text(el, "name"),
-        "alarm": _item_as_bool(el, "alarm"),
-        "block": _item_as_bool(el, "block"),
-        "learn": _item_as_bool(el, "learn"),
+        "name":    el.get("name") or _text(el, "name"),
+        "enabled": _bool(enabled_raw) if enabled_raw else True,
+        "alarm":   _item_as_bool(el, "alarm"),
+        "block":   _item_as_bool(el, "block"),
+        "learn":   _item_as_bool(el, "learn"),
     }
 
 
