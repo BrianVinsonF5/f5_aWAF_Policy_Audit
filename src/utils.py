@@ -14,17 +14,18 @@ from pathlib import Path
 
 class _MaskFilter(logging.Filter):
     """Remove passwords/tokens from log records."""
+    # Each entry is (compiled_pattern, replacement_string)
     _PATTERNS = [
-        re.compile(r'("password"\s*:\s*")[^"]*(")', re.I),
-        re.compile(r'("token"\s*:\s*")[^"]*(")', re.I),
-        re.compile(r'(X-F5-Auth-Token:\s*)\S+', re.I),
-        re.compile(r'(password=)[^\s&"]+', re.I),
+        (re.compile(r'("password"\s*:\s*")[^"]*(")', re.I),  r'\g<1>***MASKED***\g<2>'),
+        (re.compile(r'("token"\s*:\s*")[^"]*(")', re.I),     r'\g<1>***MASKED***\g<2>'),
+        (re.compile(r'(X-F5-Auth-Token:\s*)\S+', re.I),      r'\g<1>***MASKED***'),
+        (re.compile(r'(password=)[^\s&"]+', re.I),            r'\g<1>***MASKED***'),
     ]
 
     def filter(self, record: logging.LogRecord) -> bool:
         msg = record.getMessage()
-        for pat in self._PATTERNS:
-            msg = pat.sub(r'\g<1>***MASKED***\g<2>', msg)
+        for pat, repl in self._PATTERNS:
+            msg = pat.sub(repl, msg)
         record.msg = msg
         record.args = ()
         return True
