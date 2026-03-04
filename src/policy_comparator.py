@@ -53,6 +53,7 @@ class ComparisonResult:
     extra_in_target:   List = field(default_factory=list)
     score:           float = 100.0
     violations:      List[Dict] = field(default_factory=list)
+    baseline_violations: List[Dict] = field(default_factory=list)
     policy_builder_target:   Dict = field(default_factory=dict)
     policy_builder_baseline: Dict = field(default_factory=dict)
 
@@ -146,6 +147,10 @@ def compare_policies(
     # fall back to <blocking-settings> violations.
     blocking_violations = target.get("blocking", {}).get("violations", [])
     result.violations = blocking_violations or target.get("blocking-settings", {}).get("violations", [])
+
+    # Capture baseline violations for side-by-side comparison in reports.
+    baseline_blocking_violations = baseline.get("blocking", {}).get("violations", [])
+    result.baseline_violations = baseline_blocking_violations or baseline.get("blocking-settings", {}).get("violations", [])
 
     # Build summary and calculate score
     _build_summary(result)
