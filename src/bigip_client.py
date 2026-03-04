@@ -6,6 +6,7 @@ import os
 import time
 import math
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -14,7 +15,8 @@ import urllib3
 
 from .utils import get_logger, retry
 
-_CHUNK_SIZE = 1_048_576   # 1 MiB — F5 file-transfer hard limit
+_CHUNK_SIZE    = 1_048_576    # 1 MiB — F5 file-transfer hard limit
+_MAX_DOWNLOAD  = 524_288_000  # 500 MiB — safety cap against unbounded streams
 
 
 class AuthenticationError(Exception):
@@ -40,14 +42,16 @@ class BigIPClient:
         host: str,
         username: str,
         password: str,
-        verify_ssl: bool = False,
+        verify_ssl: bool = True,
         verbose: bool = False,
+        login_provider: str = "tmos",
     ):
         self.base_url = f"https://{host}"
         self._username = username
         self._password = password
         self._verify_ssl = verify_ssl
         self._verbose = verbose
+        self._login_provider = login_provider
         self.log = get_logger("bigip_client")
 
         if not verify_ssl:
@@ -58,6 +62,7 @@ class BigIPClient:
         self._token: Optional[str] = None
         self._token_expiry: float = 0.0   # epoch seconds
         self._token_lifetime: int = 1200  # default 1200s; updated on login
+        self._token_lock = threading.Lock()  # guards token refresh across threads
 
     # ── Authentication ─────────────────────────────────────────────────────────
 
@@ -67,7 +72,7 @@ class BigIPClient:
         payload = {
             "username": self._username,
             "password": self._password,
-            "loginProviderName": "tmos",
+            "loginProviderName": self._login_provider,
         }
         resp = self._session.post(
             self.base_url + self._LOGIN_PATH,
@@ -75,6 +80,8 @@ class BigIPClient:
             timeout=self._DEFAULT_TIMEOUT,
             verify=self._verify_ssl,
         )
+        # Clear the password from the payload immediately after the request
+        payload["password"] = ""
         if resp.status_code == 401:
             raise AuthenticationError(
                 f"Authentication failed for user '{self._username}'. "
@@ -98,11 +105,20 @@ class BigIPClient:
             self._token_lifetime, self._token_lifetime * 0.80
         )
 
+        # Drop the password from memory — the token is used for all subsequent
+        # requests and the plaintext credential is no longer needed.
+        self._password = ""
+
     def _ensure_token(self) -> None:
-        """Re-authenticate if the token is absent or approaching expiry."""
-        if self._token is None or time.monotonic() >= self._token_expiry:
-            self.log.info("Refreshing BIG-IP auth token …")
-            self.authenticate()
+        """Re-authenticate if the token is absent or approaching expiry.
+
+        Uses a lock so that concurrent export threads don't all trigger a
+        simultaneous re-auth when the token expires mid-run.
+        """
+        with self._token_lock:
+            if self._token is None or time.monotonic() >= self._token_expiry:
+                self.log.info("Refreshing BIG-IP auth token …")
+                self.authenticate()
 
     # ── Generic request ────────────────────────────────────────────────────────
 
@@ -248,6 +264,13 @@ class BigIPClient:
                 # Safety guard when expected_size is known
                 if expected_size and total_written >= expected_size:
                     break
+
+                # Hard cap — abort if response grows beyond the safety limit
+                if total_written >= _MAX_DOWNLOAD:
+                    raise requests.RequestException(
+                        f"Download of {path!r} exceeded the {_MAX_DOWNLOAD // 1_048_576} MiB "
+                        "safety limit. Aborting."
+                    )
 
         self.log.debug("Download complete: %s (%d bytes)", local_path, total_written)
         return total_written

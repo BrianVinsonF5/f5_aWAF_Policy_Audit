@@ -13,16 +13,33 @@ from pathlib import Path
 # ── Logging ────────────────────────────────────────────────────────────────────
 
 class _MaskFilter(logging.Filter):
-    """Remove passwords/tokens from log records."""
-    # Each entry is (compiled_pattern, replacement_string)
+    """Remove passwords/tokens from log records.
+
+    Patterns cover:
+    - JSON-style  "password": "..."  and  "token": "..."
+    - YAML-style  password: ...
+    - HTTP header X-F5-Auth-Token: <value>
+    - Query/form  password=<value>
+    - Raw bearer  Bearer <token-like value>
+    - Exception messages that echo the raw requests body
+    """
     _PATTERNS = [
-        (re.compile(r'("password"\s*:\s*")[^"]*(")', re.I),  r'\g<1>***MASKED***\g<2>'),
-        (re.compile(r'("token"\s*:\s*")[^"]*(")', re.I),     r'\g<1>***MASKED***\g<2>'),
-        (re.compile(r'(X-F5-Auth-Token:\s*)\S+', re.I),      r'\g<1>***MASKED***'),
-        (re.compile(r'(password=)[^\s&"]+', re.I),            r'\g<1>***MASKED***'),
+        # JSON double-quoted values
+        (re.compile(r'("password"\s*:\s*")[^"]*(")', re.I),         r'\g<1>***MASKED***\g<2>'),
+        (re.compile(r'("token"\s*:\s*")[^"]*(")', re.I),            r'\g<1>***MASKED***\g<2>'),
+        # YAML / plain key: value (unquoted or single-quoted)
+        (re.compile(r"(password\s*:\s*['\"]?)[^\s'\"#,}]+", re.I), r'\g<1>***MASKED***'),
+        # HTTP header (request/response logs)
+        (re.compile(r'(X-F5-Auth-Token\s*:\s*)\S+', re.I),         r'\g<1>***MASKED***'),
+        # Query string / form body
+        (re.compile(r'(password=)[^\s&"\']+', re.I),                r'\g<1>***MASKED***'),
+        # Bearer tokens in Authorization headers
+        (re.compile(r'(Bearer\s+)\S+', re.I),                       r'\g<1>***MASKED***'),
     ]
 
     def filter(self, record: logging.LogRecord) -> bool:
+        # Render the final formatted message (including % substitution) so that
+        # sensitive values embedded in the args are also caught.
         msg = record.getMessage()
         for pat, repl in self._PATTERNS:
             msg = pat.sub(repl, msg)
@@ -64,7 +81,7 @@ def setup_logging(verbose: bool, output_dir: str) -> logging.Logger:
     logger.addHandler(ch)
 
     # File handler
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    Path(output_dir).mkdir(mode=0o700, parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%dT%H%M%S")
     log_path = Path(output_dir) / f"audit_{ts}.log"
     fh = logging.FileHandler(log_path, encoding="utf-8")
@@ -129,8 +146,14 @@ def policy_export_filename(full_path: str, export_format: str = "xml") -> str:
 # ── Misc helpers ───────────────────────────────────────────────────────────────
 
 def ensure_dir(path: str) -> Path:
+    """Create a directory (and parents) with owner-only permissions (0o700).
+
+    Policy exports and audit reports contain sensitive WAF configuration data.
+    Restricting access to the process owner prevents other local users from
+    reading them on shared systems.
+    """
     p = Path(path)
-    p.mkdir(parents=True, exist_ok=True)
+    p.mkdir(mode=0o700, parents=True, exist_ok=True)
     return p
 
 

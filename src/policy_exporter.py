@@ -219,7 +219,10 @@ class PolicyExporter:
             )
 
         # Step 3 – download
-        reported_filename = result.get("filename", filename)
+        # Strip any directory components from the server-supplied filename to
+        # prevent path traversal (e.g. "../../etc/cron.d/evil").
+        raw_filename = result.get("filename", filename)
+        reported_filename = Path(raw_filename).name or filename
         expected_size: Optional[int] = result.get("fileSize")
         local_path = self.export_dir / reported_filename
         dl_path = f"{self._DOWNLOAD_BASE_EP}/{reported_filename}"

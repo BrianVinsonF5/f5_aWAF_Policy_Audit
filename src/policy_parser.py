@@ -701,14 +701,31 @@ def parse_policy(xml_path: str) -> Dict:
 
 
 def _parse_tree(xml_path: str):
-    """Parse XML file, handling encoding declarations robustly."""
+    """Parse XML file, handling encoding declarations robustly.
+
+    Entity resolution and network access are explicitly disabled to prevent
+    XML External Entity (XXE) attacks regardless of the lxml/stdlib backend.
+    """
     path = Path(xml_path)
     if _LXML:
-        parser = ET.XMLParser(recover=True, encoding="utf-8")
+        # resolve_entities=False and no_network=True prevent XXE; recover=True
+        # tolerates minor malformedness in F5 exports without expanding entities.
+        parser = ET.XMLParser(
+            recover=True,
+            resolve_entities=False,
+            no_network=True,
+            encoding="utf-8",
+        )
         try:
             return ET.parse(str(path), parser)
         except Exception:
-            # Try without encoding hint
-            return ET.parse(str(path))
+            # Retry without the encoding hint (some exports declare their own)
+            parser = ET.XMLParser(
+                recover=True,
+                resolve_entities=False,
+                no_network=True,
+            )
+            return ET.parse(str(path), parser)
     else:
+        # stdlib ElementTree does not process external entities by default.
         return ET.parse(str(path))
