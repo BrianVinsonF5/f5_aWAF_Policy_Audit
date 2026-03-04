@@ -52,6 +52,7 @@ class ComparisonResult:
     missing_in_target: List = field(default_factory=list)
     extra_in_target:   List = field(default_factory=list)
     score:           float = 100.0
+    violations:      List[Dict] = field(default_factory=list)
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -135,6 +136,9 @@ def compare_policies(
     _cmp_ip_intelligence(baseline, target, result)
     _cmp_bot_defense(baseline, target, result)
     _cmp_whitelist_ips(baseline, target, result)
+
+    # Capture the full violations list from the target policy for status reporting
+    result.violations = target.get("blocking-settings", {}).get("violations", [])
 
     # Build summary and calculate score
     _build_summary(result)

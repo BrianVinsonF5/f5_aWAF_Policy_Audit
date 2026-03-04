@@ -27,6 +27,7 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
     _md_header(lines, result)
     _md_summary_table(lines, result)
     _md_findings(lines, result)
+    _md_violations_table(lines, result)
     _md_extra_missing(lines, result)
 
     out_path.write_text('\n'.join(lines), encoding='utf-8')
@@ -92,6 +93,26 @@ def _md_findings(lines: List[str], result: ComparisonResult) -> None:
                 f"- **Impact:** {diff.description}",
                 "",
             ]
+
+
+def _md_violations_table(lines: List[str], result: ComparisonResult) -> None:
+    if not result.violations:
+        return
+    lines += [
+        "## WAF Violations Status",
+        "",
+        "| Violation | Enabled | Learn | Alarm | Block |",
+        "|-----------|:-------:|:-----:|:-----:|:-----:|",
+    ]
+    for v in sorted(result.violations, key=lambda x: x.get("name", "")):
+        lines.append(
+            f"| {v.get('name', '')} "
+            f"| {human_bool(v.get('enabled', True))} "
+            f"| {human_bool(v.get('learn', False))} "
+            f"| {human_bool(v.get('alarm', False))} "
+            f"| {human_bool(v.get('block', False))} |"
+        )
+    lines.append("")
 
 
 def _md_extra_missing(lines: List[str], result: ComparisonResult) -> None:
@@ -218,6 +239,11 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         parts.append(_html_findings_table(items))
         parts.append("</div></details>")
 
+    # WAF Violations status table
+    if result.violations:
+        parts.append("<h2>WAF Violations Status</h2>")
+        parts.append(_html_violations_table(result.violations))
+
     # Extra / missing
     if result.extra_in_target:
         parts.append("<details><summary>Extra Elements Not in Baseline "
@@ -287,6 +313,31 @@ def _html_findings_table(diffs: List[DiffItem]) -> str:
         "<thead><tr>"
         "<th>Section</th><th>Element</th><th>Attribute</th>"
         "<th>Baseline</th><th>Target</th><th>Description</th><th>Severity</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
+
+
+def _html_violations_table(violations: List[dict]) -> str:
+    rows = []
+    for v in sorted(violations, key=lambda x: x.get("name", "")):
+        def _badge(val: bool) -> str:
+            cls = "pass" if val else "fail"
+            label = "Enabled" if val else "Disabled"
+            return f"<span class='badge badge-{cls}'>{label}</span>"
+
+        rows.append(
+            f"<tr>"
+            f"<td>{_e(v.get('name', ''))}</td>"
+            f"<td>{_badge(v.get('enabled', True))}</td>"
+            f"<td>{_badge(v.get('learn', False))}</td>"
+            f"<td>{_badge(v.get('alarm', False))}</td>"
+            f"<td>{_badge(v.get('block', False))}</td>"
+            f"</tr>"
+        )
+    return (
+        "<table class='findings'>"
+        "<thead><tr>"
+        "<th>Violation</th><th>Enabled</th><th>Learn</th><th>Alarm</th><th>Block</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
     )
 
