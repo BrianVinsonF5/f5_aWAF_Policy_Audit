@@ -71,8 +71,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="BIG-IP management IP or FQDN [env: BIGIP_HOST]")
     p.add_argument("--username", metavar="USER",
                    help="Admin username [env: BIGIP_USER]")
-    p.add_argument("--password", metavar="PASS",
-                   help="Password [env: BIGIP_PASS] (interactive prompt if omitted)")
+    # NOTE: --password is intentionally absent. Supply credentials via the
+    # BIGIP_PASS environment variable or the interactive prompt to avoid
+    # exposing the password in the process table (ps aux).
     p.add_argument("--baseline", metavar="FILE",
                    help="Path to baseline XML policy file")
     p.add_argument("--output-dir", metavar="DIR", default=None,
@@ -86,12 +87,15 @@ def _build_parser() -> argparse.ArgumentParser:
                    choices=["xml", "json"], default=None,
                    help="Policy export format (default: xml)")
     p.add_argument("--verify-ssl", dest="verify_ssl", action="store_true",
-                   default=None, help="Enable TLS certificate verification")
+                   default=None, help="Enable TLS certificate verification (default)")
     p.add_argument("--no-verify-ssl", dest="verify_ssl", action="store_false",
-                   help="Disable TLS certificate verification (default)")
+                   help="Disable TLS certificate verification (for self-signed certs)")
+    p.add_argument("--login-provider", dest="login_provider", metavar="PROVIDER",
+                   default=None,
+                   help="BIG-IP login provider name [env: BIGIP_LOGIN_PROVIDER] (default: tmos)")
     p.add_argument("--concurrent-exports", dest="concurrent_exports",
                    type=int, default=None, metavar="N",
-                   help="Max parallel export tasks (default: 3)")
+                   help="Max parallel export tasks, 1–20 (default: 3)")
     p.add_argument("-v", "--verbose", action="store_true", default=False,
                    help="Enable debug logging")
     return p
@@ -122,7 +126,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Resolve parameters
     host     = _resolve(args.host,     "BIGIP_HOST", bigip_cfg.get("host"))
     username = _resolve(args.username, "BIGIP_USER", bigip_cfg.get("username"))
-    password = _resolve(args.password, "BIGIP_PASS", bigip_cfg.get("password"))
+    # Password must come from the environment or an interactive prompt.
+    # Accepting it from the config file would encourage storing plaintext
+    # credentials on disk.  BIGIP_PASS env var is still permitted (e.g. CI).
+    if bigip_cfg.get("password"):
+        print(
+            "ERROR: 'password' in the config file is not supported. "
+            "Use the BIGIP_PASS environment variable or the interactive prompt.",
+            file=sys.stderr,
+        )
+        return 1
+    password = os.environ.get("BIGIP_PASS")
+    login_provider = _resolve(
+        args.login_provider, "BIGIP_LOGIN_PROVIDER",
+        bigip_cfg.get("login_provider"), "tmos"
+    )
     baseline = _resolve(args.baseline, "BASELINE_POLICY", audit_cfg.get("baseline_policy"))
     output_dir = _resolve(args.output_dir, "OUTPUT_DIR",
                           audit_cfg.get("output_dir"), "./output")
@@ -130,8 +148,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                              audit_cfg.get("report_format"), "both")
     export_format = _resolve(args.export_format, "EXPORT_FORMAT",
                              audit_cfg.get("export_format"), "xml")
-    verify_ssl = _resolve(args.verify_ssl, "VERIFY_SSL",
-                          bigip_cfg.get("verify_ssl"), False)
+    # SSL verification defaults to True; coerce string env-var values correctly
+    # so that VERIFY_SSL=false doesn't silently evaluate to True.
+    _raw_ssl = _resolve(args.verify_ssl, "VERIFY_SSL", bigip_cfg.get("verify_ssl"), True)
+    if isinstance(_raw_ssl, str):
+        verify_ssl = _raw_ssl.lower() in ("1", "true", "yes")
+    else:
+        verify_ssl = bool(_raw_ssl)
     concurrent = _resolve(args.concurrent_exports, "CONCURRENT_EXPORTS",
                           audit_cfg.get("concurrent_exports"), 3)
     partitions_str = _resolve(args.partitions, "PARTITIONS",
@@ -161,6 +184,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"\nERROR: Missing required arguments: {', '.join(missing)}")
         return 1
 
+    # Validate concurrent_exports range
+    try:
+        concurrent = int(concurrent)
+    except (TypeError, ValueError):
+        print("ERROR: --concurrent-exports must be an integer between 1 and 20.")
+        return 1
+    if not 1 <= concurrent <= 20:
+        print(f"ERROR: --concurrent-exports must be between 1 and 20 (got {concurrent}).")
+        return 1
+
     # Password prompt if needed
     if not password:
         try:
@@ -177,10 +210,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     logger.info("Validating baseline XML …")
     _validate_xml(baseline)
 
-    # SSL warning
+    # SSL warning — loud enough to be noticed when the user opts out of verification
     if not verify_ssl:
         logger.warning(
-            "SSL verification is DISABLED. Use --verify-ssl in production environments."
+            "SSL verification is DISABLED (--no-verify-ssl). "
+            "Only use this for self-signed certificates in trusted environments. "
+            "Remove --no-verify-ssl and supply a valid CA bundle in production."
         )
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -197,8 +232,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         host=host,
         username=username,
         password=password,
-        verify_ssl=bool(verify_ssl),
+        verify_ssl=verify_ssl,
         verbose=verbose,
+        login_provider=login_provider,
     )
     try:
         client.authenticate()
@@ -215,7 +251,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         client=client,
         output_dir=output_dir,
         export_format=export_format,
-        concurrent_exports=int(concurrent),
+        concurrent_exports=concurrent,
         partitions=partitions if partitions else None,
     )
     try:

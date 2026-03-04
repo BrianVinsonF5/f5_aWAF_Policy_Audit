@@ -1,13 +1,15 @@
 bigip:
   host: "192.168.1.245"
   username: "admin"
-  # password: from env var BIGIP_PASS or interactive prompt
-  verify_ssl: false
+  # password: NOT supported here — use the BIGIP_PASS environment variable
+  #            or the interactive prompt to avoid plaintext credentials on disk.
+  verify_ssl: true           # Set to false only for self-signed certs (dev/lab)
+  login_provider: "tmos"     # Change for RADIUS/LDAP/AD auth providers
 
 audit:
   baseline_policy: "./baseline/corporate_baseline.xml"
   output_dir: "./output"
   report_format: "both"       # html, markdown, both
   export_format: "xml"
-  concurrent_exports: 3
+  concurrent_exports: 3       # 1–20
   partitions: []              # empty = all partitions
