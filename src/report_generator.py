@@ -220,14 +220,42 @@ def _md_violations_table(lines: List[str], result: ComparisonResult) -> None:
     # Detect whether violations come from the richer <blocking> section (have 'id')
     has_id = any(v.get("id") for v in result.violations)
 
+    # Build baseline lookup: keyed by id (falling back to name)
+    baseline_map: dict = {}
+    for bv in result.baseline_violations:
+        key = bv.get("id") or bv.get("name", "")
+        if key:
+            baseline_map[key] = bv
+
     lines += ["## WAF Violations Status", ""]
+
+    _MATCH = "✓ Match"
+    _MISMATCH = "✗ Mismatch"
+    _NO_BASELINE = "— N/A"
+
+    def _baseline_match_md(v: dict, bv: dict | None) -> tuple[str, str]:
+        """Return (match_cell, baseline_settings_cell) for markdown."""
+        if bv is None:
+            return _NO_BASELINE, "*(not in baseline)*"
+        attrs = ["alarm", "block", "learn"]
+        differs = any(v.get(a) != bv.get(a) for a in attrs)
+        match_cell = _MISMATCH if differs else _MATCH
+        bl_settings = (
+            f"A:{human_bool(bv.get('alarm', False))} "
+            f"B:{human_bool(bv.get('block', False))} "
+            f"L:{human_bool(bv.get('learn', False))}"
+        )
+        return match_cell, bl_settings
 
     if has_id:
         lines += [
-            "| ID | Violation Name | Alarm | Block | Learn | PB Tracking |",
-            "|----|----------------|:-----:|:-----:|:-----:|:-----------:|",
+            "| ID | Violation Name | Alarm | Block | Learn | PB Tracking | Matches Baseline | Baseline (A/B/L) |",
+            "|----|----------------|:-----:|:-----:|:-----:|:-----------:|:----------------:|:----------------:|",
         ]
         for v in sorted(result.violations, key=lambda x: x.get("id", x.get("name", ""))):
+            vid = v.get("id") or v.get("name", "")
+            bv = baseline_map.get(vid)
+            match_cell, bl_settings = _baseline_match_md(v, bv)
             pb = human_bool(v.get("policyBuilderTracking", False))
             lines.append(
                 f"| `{v.get('id', '')}` "
@@ -235,19 +263,26 @@ def _md_violations_table(lines: List[str], result: ComparisonResult) -> None:
                 f"| {human_bool(v.get('alarm', False))} "
                 f"| {human_bool(v.get('block', False))} "
                 f"| {human_bool(v.get('learn', False))} "
-                f"| {pb} |"
+                f"| {pb} "
+                f"| {match_cell} "
+                f"| {bl_settings} |"
             )
     else:
         lines += [
-            "| Violation | Alarm | Block | Learn |",
-            "|-----------|:-----:|:-----:|:-----:|",
+            "| Violation | Alarm | Block | Learn | Matches Baseline | Baseline (A/B/L) |",
+            "|-----------|:-----:|:-----:|:-----:|:----------------:|:----------------:|",
         ]
         for v in sorted(result.violations, key=lambda x: x.get("name", "")):
+            vname = v.get("name", "")
+            bv = baseline_map.get(vname)
+            match_cell, bl_settings = _baseline_match_md(v, bv)
             lines.append(
-                f"| {v.get('name', '')} "
+                f"| {vname} "
                 f"| {human_bool(v.get('alarm', False))} "
                 f"| {human_bool(v.get('block', False))} "
-                f"| {human_bool(v.get('learn', False))} |"
+                f"| {human_bool(v.get('learn', False))} "
+                f"| {match_cell} "
+                f"| {bl_settings} |"
             )
 
     lines.append("")
@@ -425,7 +460,7 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
             f"WAF Violations Status ({len(result.violations)})</h2></summary>"
             "<div class='details-body'>"
         )
-        parts.append(_html_violations_table(result.violations))
+        parts.append(_html_violations_table(result.violations, result.baseline_violations))
         parts.append("</div></details>")
 
     # Executive summary
@@ -669,17 +704,44 @@ def _html_blocking_comparison_table(diffs: List[DiffItem], violations: List[dict
     )
 
 
-def _html_violations_table(violations: List[dict]) -> str:
+def _html_violations_table(violations: List[dict], baseline_violations: List[dict] | None = None) -> str:
     has_id = any(v.get("id") for v in violations)
     rows = []
+
+    # Build baseline lookup
+    baseline_map: dict = {}
+    for bv in (baseline_violations or []):
+        key = bv.get("id") or bv.get("name", "")
+        if key:
+            baseline_map[key] = bv
 
     def _flag_badge(val: bool) -> str:
         cls = "pass" if val else "fail"
         label = "Yes" if val else "No"
         return f"<span class='badge badge-{cls}'>{label}</span>"
 
+    def _match_badge(v: dict, bv: dict | None) -> str:
+        if bv is None:
+            return "<span class='badge badge-info'>N/A</span>"
+        attrs = ["alarm", "block", "learn"]
+        differs = any(v.get(a) != bv.get(a) for a in attrs)
+        if differs:
+            return "<span class='badge badge-fail'>Mismatch</span>"
+        return "<span class='badge badge-pass'>Match</span>"
+
+    def _baseline_settings(bv: dict | None) -> str:
+        if bv is None:
+            return "<em>not in baseline</em>"
+        return (
+            f"A:{_flag_badge(bv.get('alarm', False))} "
+            f"B:{_flag_badge(bv.get('block', False))} "
+            f"L:{_flag_badge(bv.get('learn', False))}"
+        )
+
     if has_id:
         for v in sorted(violations, key=lambda x: x.get("id", x.get("name", ""))):
+            vid = v.get("id") or v.get("name", "")
+            bv = baseline_map.get(vid)
             rows.append(
                 f"<tr>"
                 f"<td><code>{_e(v.get('id', ''))}</code></td>"
@@ -688,6 +750,8 @@ def _html_violations_table(violations: List[dict]) -> str:
                 f"<td>{_flag_badge(v.get('block', False))}</td>"
                 f"<td>{_flag_badge(v.get('learn', False))}</td>"
                 f"<td>{_flag_badge(v.get('policyBuilderTracking', False))}</td>"
+                f"<td>{_match_badge(v, bv)}</td>"
+                f"<td>{_baseline_settings(bv)}</td>"
                 f"</tr>"
             )
         return (
@@ -695,22 +759,28 @@ def _html_violations_table(violations: List[dict]) -> str:
             "<thead><tr>"
             "<th>ID</th><th>Violation Name</th>"
             "<th>Alarm</th><th>Block</th><th>Learn</th><th>PB Tracking</th>"
+            "<th>Matches Baseline</th><th>Baseline (A/B/L)</th>"
             "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         )
     else:
         for v in sorted(violations, key=lambda x: x.get("name", "")):
+            vname = v.get("name", "")
+            bv = baseline_map.get(vname)
             rows.append(
                 f"<tr>"
-                f"<td>{_e(v.get('name', ''))}</td>"
+                f"<td>{_e(vname)}</td>"
                 f"<td>{_flag_badge(v.get('alarm', False))}</td>"
                 f"<td>{_flag_badge(v.get('block', False))}</td>"
                 f"<td>{_flag_badge(v.get('learn', False))}</td>"
+                f"<td>{_match_badge(v, bv)}</td>"
+                f"<td>{_baseline_settings(bv)}</td>"
                 f"</tr>"
             )
         return (
             "<table class='findings'>"
             "<thead><tr>"
             "<th>Violation</th><th>Alarm</th><th>Block</th><th>Learn</th>"
+            "<th>Matches Baseline</th><th>Baseline (A/B/L)</th>"
             "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         )
 
