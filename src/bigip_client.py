@@ -193,48 +193,61 @@ class BigIPClient:
                     "Uploaded chunk %d/%d for %s", chunk_index + 1, chunks, filepath.name
                 )
 
-    def download_file(self, path: str, local_path: str) -> int:
+    def download_file(
+        self,
+        path: str,
+        local_path: str,
+        expected_size: Optional[int] = None,
+    ) -> int:
         """
         Download a file from BIG-IP, handling the 1 MiB chunk limit.
+
+        The F5 ASM file-transfer endpoint returns at most 1,048,576 bytes per
+        request and does NOT include a Content-Range response header that reveals
+        the total file size.  Instead we loop until either:
+          - we receive fewer bytes than the chunk size (end of file), or
+          - total_written reaches expected_size (when provided by the caller).
 
         Returns the total number of bytes written.
         """
         local_path = Path(local_path)
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # First request – no Content-Range to discover total size
-        resp = self._request(
-            "GET",
-            path,
-            timeout=self._TRANSFER_TIMEOUT,
-            headers={"Content-Range": f"0-{_CHUNK_SIZE - 1}/*"},
-        )
-
-        content_range = resp.headers.get("Content-Range", "")
-        total_bytes = _parse_content_range_total(content_range)
-
         total_written = 0
         with open(local_path, "wb") as fh:
-            fh.write(resp.content)
-            total_written += len(resp.content)
+            while True:
+                start = total_written
+                end   = start + _CHUNK_SIZE - 1
+                if expected_size:
+                    end = min(end, expected_size - 1)
 
-            if total_bytes and total_bytes > _CHUNK_SIZE:
-                # Download remaining chunks
-                while total_written < total_bytes:
-                    start = total_written
-                    end = min(start + _CHUNK_SIZE - 1, total_bytes - 1)
-                    chunk_resp = self._request(
-                        "GET",
-                        path,
-                        timeout=self._TRANSFER_TIMEOUT,
-                        headers={"Content-Range": f"{start}-{end}/*"},
-                    )
-                    fh.write(chunk_resp.content)
-                    total_written += len(chunk_resp.content)
-                    self.log.debug(
-                        "Downloaded %d / %d bytes from %s",
-                        total_written, total_bytes, path
-                    )
+                resp = self._request(
+                    "GET",
+                    path,
+                    timeout=self._TRANSFER_TIMEOUT,
+                    headers={"Content-Range": f"{start}-{end}/*"},
+                )
+
+                chunk = resp.content
+                if not chunk:
+                    break
+
+                fh.write(chunk)
+                total_written += len(chunk)
+                self.log.debug(
+                    "Downloaded %d bytes (total so far: %d%s)",
+                    len(chunk),
+                    total_written,
+                    f" / {expected_size}" if expected_size else "",
+                )
+
+                # A partial chunk means we have reached the end of the file
+                if len(chunk) < _CHUNK_SIZE:
+                    break
+
+                # Safety guard when expected_size is known
+                if expected_size and total_written >= expected_size:
+                    break
 
         self.log.debug("Download complete: %s (%d bytes)", local_path, total_written)
         return total_written

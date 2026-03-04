@@ -224,7 +224,7 @@ class PolicyExporter:
         local_path = self.export_dir / reported_filename
         dl_path = f"{self._DOWNLOAD_BASE_EP}/{reported_filename}"
         self.log.info("Downloading: %s → %s", reported_filename, local_path)
-        written = self.client.download_file(dl_path, str(local_path))
+        written = self.client.download_file(dl_path, str(local_path), expected_size=expected_size)
 
         # Validate size
         if expected_size and written != expected_size:
