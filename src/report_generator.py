@@ -74,10 +74,10 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
     lines: List[str] = []
     _md_header(lines, result)
     _md_policy_builder_status(lines, result)
+    _md_violations_table(lines, result)
     _md_summary_table(lines, result)
     _md_findings(lines, result)
     _md_blocking_comparison(lines, result)
-    _md_violations_table(lines, result)
     _md_extra_missing(lines, result)
 
     out_path.write_text('\n'.join(lines), encoding='utf-8')
@@ -418,6 +418,16 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
     # Policy Builder status banner + settings table
     parts.append(_html_policy_builder_status(result))
 
+    # WAF Violations Status — collapsible, directly after Policy Builder
+    if result.violations:
+        parts.append(
+            "<details><summary><h2 style='display:inline;font-size:1em'>"
+            f"WAF Violations Status ({len(result.violations)})</h2></summary>"
+            "<div class='details-body'>"
+        )
+        parts.append(_html_violations_table(result.violations))
+        parts.append("</div></details>")
+
     # Executive summary
     parts.append("<h2>Executive Summary</h2>")
     parts.append(_html_summary_table(result))
@@ -440,19 +450,18 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         parts.append(_html_findings_table(items))
         parts.append("</div></details>")
 
-    # Blocking violations comparison table
+    # Blocking violations comparison — collapsible
     blocking_diffs = [d for d in result.diffs if d.section == "blocking"]
     if blocking_diffs or result.violations:
-        parts.append("<h2>Blocking Section — Violations Comparison</h2>")
+        n = len(blocking_diffs)
         parts.append(
-            "<p>Each violation's Alarm / Block / Learn flags compared against the baseline.</p>"
+            f"<details><summary><h2 style='display:inline;font-size:1em'>"
+            f"Blocking Section — Violations Comparison ({n} diff{'s' if n != 1 else ''})</h2>"
+            f"</summary><div class='details-body'>"
+            f"<p style='margin:8px 0'>Each violation's Alarm / Block / Learn flags compared against the baseline.</p>"
         )
         parts.append(_html_blocking_comparison_table(blocking_diffs, result.violations))
-
-    # WAF Violations status table
-    if result.violations:
-        parts.append("<h2>WAF Violations Status</h2>")
-        parts.append(_html_violations_table(result.violations))
+        parts.append("</div></details>")
 
     # Extra / missing
     if result.extra_in_target:
