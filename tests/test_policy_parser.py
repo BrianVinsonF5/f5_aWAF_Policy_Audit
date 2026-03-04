@@ -203,3 +203,86 @@ class TestParseDriftedPolicy:
 
     def test_bot_defense_disabled(self):
         assert self.policy["bot-defense"]["enabled"] is False
+
+
+class TestParseBlockingSection:
+    """Tests for the newer <blocking> section parser."""
+
+    def setup_method(self):
+        self.baseline = parse_policy(BASELINE)
+        self.drifted  = parse_policy(DRIFTED)
+        self.bl_base  = self.baseline["blocking"]
+        self.bl_drift = self.drifted["blocking"]
+
+    # ── Section-level attributes ──────────────────────────────────────────────
+
+    def test_section_present_in_baseline(self):
+        assert self.bl_base != {}
+
+    def test_baseline_enforcement_mode_blocking(self):
+        assert self.bl_base["enforcement_mode"] == "blocking"
+
+    def test_baseline_passive_mode(self):
+        assert self.bl_base["passive_mode"] == "disabled"
+
+    def test_drifted_enforcement_mode_transparent(self):
+        assert self.bl_drift["enforcement_mode"] == "transparent"
+
+    # ── Violation count ───────────────────────────────────────────────────────
+
+    def test_baseline_violation_count(self):
+        assert len(self.bl_base["violations"]) == 56
+
+    def test_drifted_violation_count(self):
+        assert len(self.bl_drift["violations"]) == 56
+
+    # ── id and name attributes ────────────────────────────────────────────────
+
+    def test_violation_has_id(self):
+        ids = {v["id"] for v in self.bl_base["violations"]}
+        assert "ILLEGAL_SOAP_ATTACHMENT" in ids
+        assert "RESPONSE_SCRUBBING" in ids
+        assert "EVASION_DETECTED" in ids
+
+    def test_violation_has_name(self):
+        viol = next(v for v in self.bl_base["violations"] if v["id"] == "VIRUS_DETECTED")
+        assert viol["name"] == "Virus detected"
+
+    # ── alarm / block / learn flags ───────────────────────────────────────────
+
+    def test_response_scrubbing_baseline_block_true(self):
+        viol = next(v for v in self.bl_base["violations"] if v["id"] == "RESPONSE_SCRUBBING")
+        assert viol["block"] is True
+        assert viol["alarm"] is True
+        assert viol["learn"] is True
+
+    def test_illegal_soap_all_false(self):
+        viol = next(v for v in self.bl_base["violations"] if v["id"] == "ILLEGAL_SOAP_ATTACHMENT")
+        assert viol["alarm"] is False
+        assert viol["block"] is False
+        assert viol["learn"] is False
+
+    def test_virus_detected_baseline_block_true(self):
+        viol = next(v for v in self.bl_base["violations"] if v["id"] == "VIRUS_DETECTED")
+        assert viol["block"] is True
+
+    # ── policyBuilderTracking ─────────────────────────────────────────────────
+
+    def test_policy_builder_tracking_parsed(self):
+        viol = next(v for v in self.bl_base["violations"] if v["id"] == "RESPONSE_SCRUBBING")
+        assert viol["policyBuilderTracking"] is True
+
+    # ── Drifted values ────────────────────────────────────────────────────────
+
+    def test_drifted_response_scrubbing_block_false(self):
+        viol = next(v for v in self.bl_drift["violations"] if v["id"] == "RESPONSE_SCRUBBING")
+        assert viol["block"] is False
+
+    def test_drifted_request_too_long_block_false(self):
+        viol = next(v for v in self.bl_drift["violations"] if v["id"] == "REQUEST_TOO_LONG")
+        assert viol["block"] is False
+        assert viol["alarm"] is False
+
+    def test_drifted_virus_detected_block_false(self):
+        viol = next(v for v in self.bl_drift["violations"] if v["id"] == "VIRUS_DETECTED")
+        assert viol["block"] is False

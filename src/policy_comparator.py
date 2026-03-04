@@ -137,8 +137,12 @@ def compare_policies(
     _cmp_bot_defense(baseline, target, result)
     _cmp_whitelist_ips(baseline, target, result)
 
-    # Capture the full violations list from the target policy for status reporting
-    result.violations = target.get("blocking-settings", {}).get("violations", [])
+    _cmp_blocking(baseline, target, result)
+
+    # Capture violations for status reporting: prefer the richer <blocking> list,
+    # fall back to <blocking-settings> violations.
+    blocking_violations = target.get("blocking", {}).get("violations", [])
+    result.violations = blocking_violations or target.get("blocking-settings", {}).get("violations", [])
 
     # Build summary and calculate score
     _build_summary(result)
@@ -257,6 +261,117 @@ def _cmp_blocking_settings(
                 result.extra_in_target.append(
                     {"section": section_key, "name": name}
                 )
+
+
+def _cmp_blocking(
+    baseline: Dict, target: Dict, result: ComparisonResult
+) -> None:
+    """
+    Compare the <blocking> section (newer AWAF export format).
+
+    Each violation is keyed by its machine-readable 'id' attribute
+    (e.g. 'ILLEGAL_SOAP_ATTACHMENT').  alarm, block, and learn are compared
+    against baseline.  policyBuilderTracking differences are flagged as INFO.
+    """
+    b_bl = baseline.get("blocking", {})
+    t_bl = target.get("blocking", {})
+
+    if not b_bl and not t_bl:
+        return  # Section absent in both — nothing to compare
+
+    # Section-level enforcement_mode comparison
+    b_em = b_bl.get("enforcement_mode", "")
+    t_em = t_bl.get("enforcement_mode", "")
+    if b_em and t_em and b_em != t_em:
+        sev = (
+            SEVERITY_CRITICAL
+            if b_em == "blocking" and t_em != "blocking"
+            else SEVERITY_WARNING
+        )
+        _add(result, DiffItem(
+            section="blocking",
+            element_name="enforcement_mode",
+            attribute="enforcement_mode",
+            baseline_value=b_em,
+            target_value=t_em,
+            severity=sev,
+            description=(
+                f"Blocking section enforcement mode changed from '{b_em}' to '{t_em}'."
+                + (" Violations will NOT be blocked." if sev == SEVERITY_CRITICAL else "")
+            ),
+        ))
+
+    b_viols = {v["id"] or v["name"]: v for v in b_bl.get("violations", [])}
+    t_viols = {v["id"] or v["name"]: v for v in t_bl.get("violations", [])}
+
+    if not b_viols:
+        # No baseline violations to compare against — track extras only
+        for vid in t_viols:
+            result.extra_in_target.append({"section": "blocking", "id": vid})
+        return
+
+    for vid, b_viol in b_viols.items():
+        display = b_viol.get("name") or vid
+
+        if vid not in t_viols:
+            result.missing_in_target.append({"section": "blocking", "id": vid, "name": display})
+            _add(result, DiffItem(
+                section="blocking",
+                element_name=vid,
+                attribute="(all)",
+                baseline_value="present",
+                target_value="missing",
+                severity=SEVERITY_WARNING,
+                description=f"Blocking violation '{display}' ({vid}) is in baseline but absent from target.",
+            ))
+            continue
+
+        t_viol = t_viols[vid]
+
+        # Compare alarm / block / learn
+        for attr in ("alarm", "block", "learn"):
+            b_val = b_viol.get(attr)
+            t_val = t_viol.get(attr)
+            if b_val != t_val:
+                sev = (
+                    SEVERITY_CRITICAL
+                    if attr == "block" and b_val is True and t_val is False
+                    else SEVERITY_WARNING
+                )
+                desc = (
+                    f"Protection disabled: violation '{display}' ({vid}) has block=True "
+                    "in baseline but block=False in target. Attacks will NOT be blocked."
+                    if sev == SEVERITY_CRITICAL
+                    else f"Violation '{display}' ({vid}) '{attr}' setting differs from baseline."
+                )
+                _add(result, DiffItem(
+                    section="blocking",
+                    element_name=vid,
+                    attribute=attr,
+                    baseline_value=b_val,
+                    target_value=t_val,
+                    severity=sev,
+                    description=desc,
+                ))
+
+        # policyBuilderTracking differences are informational
+        b_pbt = b_viol.get("policyBuilderTracking")
+        t_pbt = t_viol.get("policyBuilderTracking")
+        if b_pbt is not None and b_pbt != t_pbt:
+            _add(result, DiffItem(
+                section="blocking",
+                element_name=vid,
+                attribute="policyBuilderTracking",
+                baseline_value=b_pbt,
+                target_value=t_pbt,
+                severity=SEVERITY_INFO,
+                description=f"Violation '{display}' ({vid}) policy builder tracking setting differs.",
+            ))
+
+    for vid in t_viols:
+        if vid not in b_viols:
+            result.extra_in_target.append({"section": "blocking", "id": vid,
+                                           "name": t_viols[vid].get("name", vid)})
 
 
 def _cmp_attack_signatures(

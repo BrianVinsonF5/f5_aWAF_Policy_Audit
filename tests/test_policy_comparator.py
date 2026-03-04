@@ -207,6 +207,96 @@ class TestComplianceScore:
         assert score == 0.0
 
 
+# ── Blocking section comparisons ──────────────────────────────────────────────
+
+class TestBlockingSectionComparison:
+    """Verify <blocking> section diff detection against the drifted fixture."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, result):
+        self.blocking_diffs = [d for d in result.diffs if d.section == "blocking"]
+        self.criticals = [d for d in self.blocking_diffs if d.severity == SEVERITY_CRITICAL]
+        self.warnings   = [d for d in self.blocking_diffs if d.severity == SEVERITY_WARNING]
+
+    def test_blocking_diffs_detected(self):
+        assert len(self.blocking_diffs) > 0
+
+    def test_enforcement_mode_critical(self):
+        """blocking enforcement_mode changed from blocking → transparent."""
+        assert any(
+            d.element_name == "enforcement_mode" and d.severity == SEVERITY_CRITICAL
+            for d in self.blocking_diffs
+        )
+
+    def test_response_scrubbing_block_critical(self):
+        """RESPONSE_SCRUBBING block=True→False must be CRITICAL."""
+        assert any(
+            d.element_name == "RESPONSE_SCRUBBING"
+            and d.attribute == "block"
+            and d.severity == SEVERITY_CRITICAL
+            and d.baseline_value is True
+            and d.target_value is False
+            for d in self.blocking_diffs
+        )
+
+    def test_request_too_long_block_critical(self):
+        """REQUEST_TOO_LONG block=True→False must be CRITICAL."""
+        assert any(
+            d.element_name == "REQUEST_TOO_LONG"
+            and d.attribute == "block"
+            and d.severity == SEVERITY_CRITICAL
+            for d in self.blocking_diffs
+        )
+
+    def test_request_too_long_alarm_warning(self):
+        """REQUEST_TOO_LONG alarm=True→False must be WARNING."""
+        assert any(
+            d.element_name == "REQUEST_TOO_LONG"
+            and d.attribute == "alarm"
+            and d.severity == SEVERITY_WARNING
+            for d in self.blocking_diffs
+        )
+
+    def test_virus_detected_block_critical(self):
+        """VIRUS_DETECTED block=True→False must be CRITICAL."""
+        assert any(
+            d.element_name == "VIRUS_DETECTED"
+            and d.attribute == "block"
+            and d.severity == SEVERITY_CRITICAL
+            for d in self.blocking_diffs
+        )
+
+    def test_virus_detected_learn_warning(self):
+        """VIRUS_DETECTED learn=False→True must be WARNING."""
+        assert any(
+            d.element_name == "VIRUS_DETECTED"
+            and d.attribute == "learn"
+            and d.severity == SEVERITY_WARNING
+            for d in self.blocking_diffs
+        )
+
+    def test_unchanged_violations_not_reported(self):
+        """Violations with no change (ILLEGAL_SOAP_ATTACHMENT, EVASION_DETECTED, etc.)
+        must not appear in the blocking diffs list."""
+        unchanged_ids = {"ILLEGAL_SOAP_ATTACHMENT", "PARSER_EXPIRED_INGRESS_OBJECT",
+                         "ILLEGAL_INGRESS_OBJECT", "EVASION_DETECTED"}
+        reported_ids = {d.element_name for d in self.blocking_diffs}
+        # None of the unchanged violations should have generated a diff entry
+        # (excluding enforcement_mode which is a section-level element)
+        assert not unchanged_ids.intersection(reported_ids)
+
+    def test_violations_populated_from_blocking_section(self, result):
+        """result.violations should be sourced from the richer <blocking> section."""
+        ids = {v.get("id") for v in result.violations}
+        assert "RESPONSE_SCRUBBING" in ids
+        assert "VIRUS_DETECTED" in ids
+
+    def test_violations_have_name_and_id(self, result):
+        for v in result.violations:
+            assert v.get("id"), f"Violation missing id: {v}"
+            assert v.get("name"), f"Violation missing name: {v}"
+
+
 # ── Extra / missing tracking ───────────────────────────────────────────────────
 
 class TestExtraMissing:
