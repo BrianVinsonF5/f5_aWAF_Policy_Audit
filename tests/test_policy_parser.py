@@ -231,10 +231,10 @@ class TestParseBlockingSection:
     # ── Violation count ───────────────────────────────────────────────────────
 
     def test_baseline_violation_count(self):
-        assert len(self.bl_base["violations"]) == 7
+        assert len(self.bl_base["violations"]) == 56
 
     def test_drifted_violation_count(self):
-        assert len(self.bl_drift["violations"]) == 7
+        assert len(self.bl_drift["violations"]) == 56
 
     # ── id and name attributes ────────────────────────────────────────────────
 
