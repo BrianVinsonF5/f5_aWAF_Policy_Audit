@@ -599,4 +599,109 @@
       <ignore-ip-reputation>false</ignore-ip-reputation>
     </whitelist-ip>
   </whitelist-ips>
+
+  <!-- policy_builder: learning_mode=Manual (baseline=Automatic), learn_cookies=Never (baseline=Always) -->
+  <policy_builder>
+    <learning_mode>Manual</learning_mode>
+    <client_side_policy_building>false</client_side_policy_building>
+    <track_site_changes>
+      <untrusted>
+        <enabled>true</enabled>
+        <distinct_sources>10</distinct_sources>
+        <minimum_interval>1200</minimum_interval>
+        <maximum_interval>604800</maximum_interval>
+      </untrusted>
+      <trusted>
+        <enabled>true</enabled>
+        <distinct_sources>1</distinct_sources>
+        <minimum_interval>0</minimum_interval>
+        <maximum_interval>604800</maximum_interval>
+      </trusted>
+    </track_site_changes>
+    <loosen_rule>
+      <untrusted>
+        <distinct_sources>20</distinct_sources>
+        <minimum_interval>3600</minimum_interval>
+        <maximum_interval>604800</maximum_interval>
+      </untrusted>
+      <trusted>
+        <distinct_sources>1</distinct_sources>
+        <minimum_interval>0</minimum_interval>
+        <maximum_interval>604800</maximum_interval>
+      </trusted>
+    </loosen_rule>
+    <tighten_rule>
+      <total_requests>15000</total_requests>
+      <minimum_interval>86400</minimum_interval>
+      <max_modification_suggestion_score>50</max_modification_suggestion_score>
+    </tighten_rule>
+    <all_trusted_ips>list</all_trusted_ips>
+    <learn_from_responses>false</learn_from_responses>
+    <learn_inactive_entities>true</learn_inactive_entities>
+    <inactive_entity_inactivity_duration_in_seconds>7776000</inactive_entity_inactivity_duration_in_seconds>
+    <enable_full_policy_inspection>true</enable_full_policy_inspection>
+    <auto_apply_frequency>real-time</auto_apply_frequency>
+    <auto_apply_start_time>00:00</auto_apply_start_time>
+    <auto_apply_end_time>23:59</auto_apply_end_time>
+    <apply_on_all_days>true</apply_on_all_days>
+    <apply_at_all_times>true</apply_at_all_times>
+    <learn_only_from_non_bot_traffic>true</learn_only_from_non_bot_traffic>
+    <fully_automatic>true</fully_automatic>
+    <response_code>1xx</response_code>
+    <response_code>3xx</response_code>
+    <response_code>2xx</response_code>
+  </policy_builder>
+
+  <policy_builder_cookie>
+    <learn_cookies>Never</learn_cookies>
+    <maximum_allowed_modified_cookies>100</maximum_allowed_modified_cookies>
+    <collapse_cookies>false</collapse_cookies>
+    <collapse_cookies_occurrences>10</collapse_cookies_occurrences>
+    <flg_enforce_unmodified_cookies>false</flg_enforce_unmodified_cookies>
+  </policy_builder_cookie>
+
+  <policy_builder_filetype>
+    <learn_file_types>Compact</learn_file_types>
+    <maximum_file_types>50</maximum_file_types>
+  </policy_builder_filetype>
+
+  <policy_builder_parameter>
+    <learn_parameters>Never</learn_parameters>
+    <maximum_parameters>10000</maximum_parameters>
+    <parameter_level>global</parameter_level>
+    <collapse_parameters>true</collapse_parameters>
+    <collapse_parameters_occurrences>10</collapse_parameters_occurrences>
+    <classify_parameters>false</classify_parameters>
+  </policy_builder_parameter>
+
+  <policy_builder_url>
+    <learn_urls>Never</learn_urls>
+    <learn_websocket_urls>Never</learn_websocket_urls>
+    <maximum_urls>10000</maximum_urls>
+    <collapse_urls>false</collapse_urls>
+    <classify_urls>false</classify_urls>
+  </policy_builder_url>
+
+  <policy_builder_header>
+    <valid_host_names>true</valid_host_names>
+    <maximum_hosts>10000</maximum_hosts>
+  </policy_builder_header>
+
+  <policy_builder_redirection_protection>
+    <learn_redirection_domains>Always</learn_redirection_domains>
+    <maximum_redirection_domains>100</maximum_redirection_domains>
+  </policy_builder_redirection_protection>
+
+  <policy_builder_sessions_and_logins>
+    <flg_learn_login_pages>false</flg_learn_login_pages>
+  </policy_builder_sessions_and_logins>
+
+  <policy_builder_server_technologies>
+    <learn_server_technologies>false</learn_server_technologies>
+  </policy_builder_server_technologies>
+
+  <policy_builder_central_configuration>
+    <building_mode>local</building_mode>
+    <event_correlation_mode>local</event_correlation_mode>
+  </policy_builder_central_configuration>
 </policy>
