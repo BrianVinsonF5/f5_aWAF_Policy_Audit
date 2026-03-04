@@ -53,6 +53,8 @@ class ComparisonResult:
     extra_in_target:   List = field(default_factory=list)
     score:           float = 100.0
     violations:      List[Dict] = field(default_factory=list)
+    policy_builder_target:   Dict = field(default_factory=dict)
+    policy_builder_baseline: Dict = field(default_factory=dict)
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -138,6 +140,7 @@ def compare_policies(
     _cmp_whitelist_ips(baseline, target, result)
 
     _cmp_blocking(baseline, target, result)
+    _cmp_policy_builder(baseline, target, result)
 
     # Capture violations for status reporting: prefer the richer <blocking> list,
     # fall back to <blocking-settings> violations.
@@ -672,6 +675,107 @@ def _cmp_whitelist_ips(
                 description=f"IP/CIDR {cidr} is in baseline whitelist but missing from target.",
             ))
             result.missing_in_target.append({"section": "whitelist-ips", "ip": cidr})
+
+
+def _cmp_pb_sub(
+    b_pb: Dict, t_pb: Dict, result: ComparisonResult,
+    sub_key: str, attrs_sevs: List,
+) -> None:
+    b_sub = b_pb.get(sub_key, {})
+    t_sub = t_pb.get(sub_key, {})
+    if not b_sub:
+        return
+    for attr, sev in attrs_sevs:
+        b_val = b_sub.get(attr)
+        t_val = t_sub.get(attr)
+        if b_val is not None and b_val != t_val:
+            _add(result, DiffItem(
+                section=f"policy-builder.{sub_key}",
+                element_name=attr,
+                attribute=attr,
+                baseline_value=b_val,
+                target_value=t_val,
+                severity=sev,
+                description=f"Policy Builder {sub_key} '{attr}' differs from baseline.",
+            ))
+
+
+def _cmp_policy_builder(
+    baseline: Dict, target: Dict, result: ComparisonResult
+) -> None:
+    """Compare <policy_builder> and sibling sections against baseline."""
+    b_pb = baseline.get("policy-builder", {})
+    t_pb = target.get("policy-builder", {})
+
+    result.policy_builder_target   = t_pb
+    result.policy_builder_baseline = b_pb
+
+    if not b_pb:
+        return  # No baseline to compare against
+
+    flat_checks = [
+        ("learningMode",              SEVERITY_WARNING,  "Policy Builder learning mode differs from baseline."),
+        ("fullyAutomatic",            SEVERITY_WARNING,  "Policy Builder fully-automatic setting differs from baseline."),
+        ("clientSidePolicyBuilding",  SEVERITY_INFO,     "Client-side policy building setting differs from baseline."),
+        ("learnFromResponses",        SEVERITY_INFO,     "Learn-from-responses setting differs from baseline."),
+        ("learnInactiveEntities",     SEVERITY_INFO,     "Learn-inactive-entities setting differs from baseline."),
+        ("enableFullPolicyInspection",SEVERITY_WARNING,  "Enable-full-policy-inspection setting differs from baseline."),
+        ("autoApplyFrequency",        SEVERITY_WARNING,  "Auto-apply frequency differs from baseline."),
+        ("learnOnlyFromNonBotTraffic",SEVERITY_INFO,     "Learn-only-from-non-bot-traffic setting differs from baseline."),
+        ("allTrustedIps",             SEVERITY_INFO,     "All-trusted-IPs source setting differs from baseline."),
+    ]
+    for key, sev, desc in flat_checks:
+        b_val = b_pb.get(key)
+        t_val = t_pb.get(key)
+        if b_val is not None and b_val != t_val:
+            _add(result, DiffItem(
+                section="policy-builder",
+                element_name=key,
+                attribute=key,
+                baseline_value=b_val,
+                target_value=t_val,
+                severity=sev,
+                description=desc,
+            ))
+
+    _cmp_pb_sub(b_pb, t_pb, result, "cookie", [
+        ("learnCookies",                  SEVERITY_WARNING),
+        ("maximumAllowedModifiedCookies", SEVERITY_INFO),
+        ("collapseCookies",               SEVERITY_INFO),
+        ("enforceUnmodifiedCookies",      SEVERITY_INFO),
+    ])
+    _cmp_pb_sub(b_pb, t_pb, result, "filetype", [
+        ("learnFileTypes",  SEVERITY_WARNING),
+        ("maximumFileTypes", SEVERITY_INFO),
+    ])
+    _cmp_pb_sub(b_pb, t_pb, result, "parameter", [
+        ("learnParameters",  SEVERITY_WARNING),
+        ("parameterLevel",   SEVERITY_INFO),
+        ("collapseParameters", SEVERITY_INFO),
+        ("classifyParameters", SEVERITY_INFO),
+    ])
+    _cmp_pb_sub(b_pb, t_pb, result, "url", [
+        ("learnUrls",          SEVERITY_WARNING),
+        ("learnWebsocketUrls", SEVERITY_INFO),
+        ("collapseUrls",       SEVERITY_INFO),
+        ("classifyUrls",       SEVERITY_INFO),
+    ])
+    _cmp_pb_sub(b_pb, t_pb, result, "header", [
+        ("validHostNames", SEVERITY_INFO),
+    ])
+    _cmp_pb_sub(b_pb, t_pb, result, "redirectionProtection", [
+        ("learnRedirectionDomains", SEVERITY_WARNING),
+    ])
+    _cmp_pb_sub(b_pb, t_pb, result, "sessionsAndLogins", [
+        ("learnLoginPages", SEVERITY_INFO),
+    ])
+    _cmp_pb_sub(b_pb, t_pb, result, "serverTechnologies", [
+        ("learnServerTechnologies", SEVERITY_INFO),
+    ])
+    _cmp_pb_sub(b_pb, t_pb, result, "centralConfiguration", [
+        ("buildingMode",         SEVERITY_INFO),
+        ("eventCorrelationMode", SEVERITY_INFO),
+    ])
 
 
 # ── Score & summary ────────────────────────────────────────────────────────────

@@ -14,6 +14,54 @@ _log = get_logger("report_generator")
 
 _PASS_THRESHOLD = 90.0
 
+# ── Policy Builder display config ──────────────────────────────────────────────
+
+# (section_label, display_name, flat_key)
+_PB_FLAT_ROWS = [
+    ("Core", "Learning Mode",                   "learningMode"),
+    ("Core", "Fully Automatic",                 "fullyAutomatic"),
+    ("Core", "Client-Side Policy Building",     "clientSidePolicyBuilding"),
+    ("Core", "Learn From Responses",            "learnFromResponses"),
+    ("Core", "Learn Inactive Entities",         "learnInactiveEntities"),
+    ("Core", "Enable Full Policy Inspection",   "enableFullPolicyInspection"),
+    ("Core", "Auto Apply Frequency",            "autoApplyFrequency"),
+    ("Core", "Auto Apply Start Time",           "autoApplyStartTime"),
+    ("Core", "Auto Apply End Time",             "autoApplyEndTime"),
+    ("Core", "Apply on All Days",               "applyOnAllDays"),
+    ("Core", "Apply at All Times",              "applyAtAllTimes"),
+    ("Core", "Learn Only from Non-Bot Traffic", "learnOnlyFromNonBotTraffic"),
+    ("Core", "All Trusted IPs Source",          "allTrustedIps"),
+    ("Core", "Response Codes",                  "responseCodes"),
+]
+
+# (section_label, display_name, sub_key, field_key)
+_PB_SUB_ROWS = [
+    ("Cookie",                  "Learn Cookies",               "cookie",                   "learnCookies"),
+    ("Cookie",                  "Max Modified Cookies",        "cookie",                   "maximumAllowedModifiedCookies"),
+    ("Cookie",                  "Collapse Cookies",            "cookie",                   "collapseCookies"),
+    ("Cookie",                  "Enforce Unmodified Cookies",  "cookie",                   "enforceUnmodifiedCookies"),
+    ("File Type",               "Learn File Types",            "filetype",                 "learnFileTypes"),
+    ("File Type",               "Maximum File Types",          "filetype",                 "maximumFileTypes"),
+    ("Parameter",               "Learn Parameters",            "parameter",                "learnParameters"),
+    ("Parameter",               "Maximum Parameters",          "parameter",                "maximumParameters"),
+    ("Parameter",               "Parameter Level",             "parameter",                "parameterLevel"),
+    ("Parameter",               "Collapse Parameters",         "parameter",                "collapseParameters"),
+    ("Parameter",               "Classify Parameters",         "parameter",                "classifyParameters"),
+    ("URL",                     "Learn URLs",                  "url",                      "learnUrls"),
+    ("URL",                     "Learn WebSocket URLs",        "url",                      "learnWebsocketUrls"),
+    ("URL",                     "Maximum URLs",                "url",                      "maximumUrls"),
+    ("URL",                     "Collapse URLs",               "url",                      "collapseUrls"),
+    ("URL",                     "Classify URLs",               "url",                      "classifyUrls"),
+    ("Header",                  "Valid Host Names",            "header",                   "validHostNames"),
+    ("Header",                  "Maximum Hosts",               "header",                   "maximumHosts"),
+    ("Redirection Protection",  "Learn Redirection Domains",   "redirectionProtection",    "learnRedirectionDomains"),
+    ("Redirection Protection",  "Max Redirection Domains",     "redirectionProtection",    "maximumRedirectionDomains"),
+    ("Sessions & Logins",       "Learn Login Pages",           "sessionsAndLogins",        "learnLoginPages"),
+    ("Server Technologies",     "Learn Server Technologies",   "serverTechnologies",       "learnServerTechnologies"),
+    ("Central Configuration",   "Building Mode",               "centralConfiguration",     "buildingMode"),
+    ("Central Configuration",   "Event Correlation Mode",      "centralConfiguration",     "eventCorrelationMode"),
+]
+
 
 # ── Markdown ───────────────────────────────────────────────────────────────────
 
@@ -25,6 +73,7 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
 
     lines: List[str] = []
     _md_header(lines, result)
+    _md_policy_builder_status(lines, result)
     _md_summary_table(lines, result)
     _md_findings(lines, result)
     _md_blocking_comparison(lines, result)
@@ -51,6 +100,74 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
         f"- **Compliance Score:** {score:.1f}% — **{status}** (threshold: {_PASS_THRESHOLD:.0f}%)",
         "",
     ]
+
+
+def _md_policy_builder_status(lines: List[str], result: ComparisonResult) -> None:
+    pb_t = result.policy_builder_target
+    pb_b = result.policy_builder_baseline
+
+    if not pb_t:
+        return
+
+    learning_mode = pb_t.get("learningMode", "unknown")
+    bl_learning_mode = pb_b.get("learningMode", "") if pb_b else ""
+
+    # Mode label + indicator
+    mode_upper = learning_mode.upper()
+    if learning_mode.lower() in ("automatic", "automatic-only"):
+        mode_indicator = "✅ AUTOMATIC"
+    elif learning_mode.lower() == "manual":
+        mode_indicator = "⚠ MANUAL"
+    elif learning_mode.lower() in ("disabled", ""):
+        mode_indicator = "🔴 DISABLED"
+    else:
+        mode_indicator = f"ℹ {mode_upper}"
+
+    differs = bl_learning_mode and bl_learning_mode.lower() != learning_mode.lower()
+    baseline_note = f" *(Baseline: `{bl_learning_mode}`)*" if differs else ""
+
+    lines += [
+        "## Policy Builder Status",
+        "",
+        f"**Learning Mode:** `{learning_mode}` — **{mode_indicator}**{baseline_note}",
+        "",
+    ]
+
+    # Full comparison table
+    lines += [
+        "### Policy Builder Settings",
+        "",
+        "| Section | Setting | Baseline | Target | Match |",
+        "|---------|---------|----------|--------|-------|",
+    ]
+
+    def _fmt(val) -> str:
+        if val is None or val == "":
+            return "*(n/a)*"
+        if isinstance(val, list):
+            return ", ".join(str(v) for v in val) if val else "*(empty)*"
+        return human_bool(val)
+
+    def _match(b_val, t_val) -> str:
+        if b_val is None or b_val == "":
+            return "—"
+        return "✓" if b_val == t_val else "⚠"
+
+    for section, label, key in _PB_FLAT_ROWS:
+        t_val = pb_t.get(key)
+        b_val = pb_b.get(key) if pb_b else None
+        lines.append(
+            f"| {section} | {label} | {_fmt(b_val)} | {_fmt(t_val)} | {_match(b_val, t_val)} |"
+        )
+
+    for section, label, sub_key, field_key in _PB_SUB_ROWS:
+        t_val = pb_t.get(sub_key, {}).get(field_key)
+        b_val = pb_b.get(sub_key, {}).get(field_key) if pb_b else None
+        lines.append(
+            f"| {section} | {label} | {_fmt(b_val)} | {_fmt(t_val)} | {_match(b_val, t_val)} |"
+        )
+
+    lines.append("")
 
 
 def _md_summary_table(lines: List[str], result: ComparisonResult) -> None:
@@ -224,11 +341,25 @@ h3{color:#0f3460;margin:14px 0 6px}
 .badge-info{background:#17a2b8}
 .badge-pass{background:#28a745}
 .badge-fail{background:#dc3545}
+.badge-manual{background:#fd7e14}
+.badge-automatic{background:#28a745}
+.badge-disabled{background:#dc3545}
+.badge-unknown{background:#6c757d}
+.pb-banner{border-radius:6px;padding:14px 18px;margin:16px 0;display:flex;align-items:center;gap:14px;font-size:1em}
+.pb-banner-manual{background:#fff3cd;border:1px solid #ffc107}
+.pb-banner-automatic{background:#d4edda;border:1px solid #28a745}
+.pb-banner-disabled{background:#f8d7da;border:1px solid #dc3545}
+.pb-banner-unknown{background:#e2e3e5;border:1px solid #adb5bd}
+.pb-banner .pb-mode-label{font-size:1.1em;font-weight:bold}
+.pb-banner .pb-baseline-note{font-size:.85em;color:#555;margin-left:6px}
 table.findings{width:100%;border-collapse:collapse;margin:8px 0;font-size:.9em}
 table.findings th{background:#1a1a2e;color:#fff;padding:8px 10px;text-align:left}
 table.findings td{padding:7px 10px;border-bottom:1px solid #e0e0e0;vertical-align:top}
 table.findings tr:nth-child(even){background:#f9f9f9}
 table.findings tr:hover{background:#eef3ff}
+table.findings td.match-ok{color:#28a745;font-weight:bold;text-align:center}
+table.findings td.match-diff{color:#dc3545;font-weight:bold;text-align:center}
+table.findings td.match-na{color:#aaa;text-align:center}
 .summary-table{width:100%;border-collapse:collapse;margin:8px 0}
 .summary-table th{background:#16213e;color:#fff;padding:8px 10px}
 .summary-table td{padding:7px 10px;border-bottom:1px solid #e0e0e0;text-align:center}
@@ -242,6 +373,7 @@ details[open] summary::before{transform:rotate(90deg)}
 .list-items li{padding:3px 0;font-family:monospace;font-size:.85em}
 @media print{
   .score-bar{-webkit-print-color-adjust:exact}
+  .pb-banner{-webkit-print-color-adjust:exact}
   details{display:block}
   details summary::before{display:none}
 }
@@ -282,6 +414,9 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         f"<div class='score-bar'><div class='{score_class} score-fill' style='width:{min(score,100):.1f}%'></div></div>",
         "</div>",
     ]
+
+    # Policy Builder status banner + settings table
+    parts.append(_html_policy_builder_status(result))
 
     # Executive summary
     parts.append("<h2>Executive Summary</h2>")
@@ -366,6 +501,100 @@ def _html_summary_table(result: ComparisonResult) -> str:
         "<thead><tr><th>Category</th><th>Critical</th><th>Warning</th><th>Info</th><th>Total</th></tr></thead>"
         "<tbody>" + "".join(rows) + "</tbody></table>"
     )
+
+
+def _html_policy_builder_status(result: ComparisonResult) -> str:
+    pb_t = result.policy_builder_target
+    pb_b = result.policy_builder_baseline
+
+    if not pb_t:
+        return ""
+
+    learning_mode = pb_t.get("learningMode", "unknown")
+    bl_learning_mode = pb_b.get("learningMode", "") if pb_b else ""
+    mode_lc = learning_mode.lower()
+
+    if mode_lc in ("automatic", "automatic-only"):
+        banner_cls, badge_cls, icon = "pb-banner-automatic", "badge-automatic", "&#10003;"
+    elif mode_lc == "manual":
+        banner_cls, badge_cls, icon = "pb-banner-manual",    "badge-manual",    "&#9888;"
+    elif mode_lc in ("disabled", ""):
+        banner_cls, badge_cls, icon = "pb-banner-disabled",  "badge-disabled",  "&#10007;"
+    else:
+        banner_cls, badge_cls, icon = "pb-banner-unknown",   "badge-unknown",   "&#8505;"
+
+    differs = bl_learning_mode and bl_learning_mode.lower() != mode_lc
+    baseline_note = (
+        f"<span class='pb-baseline-note'>(Baseline: <code>{_e(bl_learning_mode)}</code>)</span>"
+        if differs else ""
+    )
+
+    banner = (
+        f"<h2>Policy Builder Status</h2>"
+        f"<div class='pb-banner {_e(banner_cls)}'>"
+        f"<span class='badge {_e(badge_cls)}'>{icon} {_e(learning_mode.upper())}</span>"
+        f"<span class='pb-mode-label'>Learning Mode: <strong>{_e(learning_mode)}</strong></span>"
+        f"{baseline_note}"
+        f"</div>"
+    )
+
+    # Settings comparison table
+    def _fmt(val) -> str:
+        if val is None or val == "":
+            return "<em>n/a</em>"
+        if isinstance(val, list):
+            return _e(", ".join(str(v) for v in val)) if val else "<em>empty</em>"
+        return _e(human_bool(val))
+
+    rows = []
+    last_section = None
+
+    all_rows = (
+        [(sec, label, pb_t.get(key), pb_b.get(key) if pb_b else None)
+         for sec, label, key in _PB_FLAT_ROWS]
+        +
+        [(sec, label, pb_t.get(sub, {}).get(fld), pb_b.get(sub, {}).get(fld) if pb_b else None)
+         for sec, label, sub, fld in _PB_SUB_ROWS]
+    )
+
+    for section, label, t_val, b_val in all_rows:
+        if section != last_section:
+            rows.append(
+                f"<tr style='background:#e8ecf5'>"
+                f"<td colspan='4' style='font-weight:bold;color:#16213e;padding:6px 10px'>"
+                f"{_e(section)}</td></tr>"
+            )
+            last_section = section
+
+        if b_val is None or b_val == "":
+            match_td = "<td class='match-na'>—</td>"
+        elif b_val == t_val:
+            match_td = "<td class='match-ok'>&#10003;</td>"
+        else:
+            match_td = "<td class='match-diff'>&#9888;</td>"
+
+        rows.append(
+            f"<tr>"
+            f"<td>{_e(label)}</td>"
+            f"<td>{_fmt(b_val)}</td>"
+            f"<td>{_fmt(t_val)}</td>"
+            f"{match_td}"
+            f"</tr>"
+        )
+
+    table = (
+        "<details open><summary>Policy Builder Settings Comparison</summary>"
+        "<div class='details-body'>"
+        "<table class='findings'>"
+        "<thead><tr>"
+        "<th>Setting</th><th>Baseline</th><th>Target</th><th>Match</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows) +
+        "</tbody></table>"
+        "</div></details>"
+    )
+
+    return banner + table
 
 
 def _html_findings_table(diffs: List[DiffItem]) -> str:

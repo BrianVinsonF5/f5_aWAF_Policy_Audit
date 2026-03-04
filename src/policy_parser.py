@@ -442,18 +442,176 @@ def _parse_login_pages(root) -> List[Dict]:
     return results
 
 
+def _parse_pb_traffic_sources(el) -> Dict:
+    """Parse untrusted/trusted sub-elements of track_site_changes or loosen_rule."""
+    result: Dict[str, Any] = {}
+    for src in ("untrusted", "trusted"):
+        src_el = _find(el, src)
+        if src_el is None:
+            continue
+        def _st(t, _e=src_el): return _text(_e, t) or _text(_e, t.replace("_", "-"))
+        result[src] = {
+            "enabled":         _norm_bool(src_el, "enabled", True),
+            "distinctSources": _int(_st("distinct_sources"), 0),
+            "minimumInterval": _int(_st("minimum_interval"), 0),
+            "maximumInterval": _int(_st("maximum_interval"), 0),
+        }
+    return result
+
+
+def _parse_pb_subsections(root) -> Dict:
+    """Parse policy_builder_* sibling sections at the root level."""
+    result: Dict[str, Any] = {}
+
+    def _try(tag):
+        el = _find(root, tag)
+        return el if el is not None else _find(root, tag.replace("_", "-"))
+
+    def _ut(el, tag):
+        return _text(el, tag) or _text(el, tag.replace("_", "-"))
+
+    def _ub(el, tag, default=False):
+        ch = _find(el, tag)
+        if ch is None:
+            ch = _find(el, tag.replace("_", "-"))
+        return _bool(ch.text) if ch is not None and ch.text else default
+
+    pbc = _try("policy_builder_cookie")
+    if pbc is not None:
+        result["cookie"] = {
+            "learnCookies":                  _ut(pbc, "learn_cookies"),
+            "maximumAllowedModifiedCookies": _int(_ut(pbc, "maximum_allowed_modified_cookies"), 0),
+            "collapseCookies":               _ub(pbc, "collapse_cookies"),
+            "collapseCookiesOccurrences":    _int(_ut(pbc, "collapse_cookies_occurrences"), 0),
+            "enforceUnmodifiedCookies":      _ub(pbc, "flg_enforce_unmodified_cookies"),
+        }
+
+    pbft = _try("policy_builder_filetype")
+    if pbft is not None:
+        result["filetype"] = {
+            "learnFileTypes":  _ut(pbft, "learn_file_types"),
+            "maximumFileTypes": _int(_ut(pbft, "maximum_file_types"), 0),
+        }
+
+    pbp = _try("policy_builder_parameter")
+    if pbp is not None:
+        result["parameter"] = {
+            "learnParameters":               _ut(pbp, "learn_parameters"),
+            "maximumParameters":             _int(_ut(pbp, "maximum_parameters"), 0),
+            "parameterLevel":                _ut(pbp, "parameter_level"),
+            "collapseParameters":            _ub(pbp, "collapse_parameters"),
+            "collapseParametersOccurrences": _int(_ut(pbp, "collapse_parameters_occurrences"), 0),
+            "classifyParameters":            _ub(pbp, "classify_parameters"),
+        }
+
+    pbu = _try("policy_builder_url")
+    if pbu is not None:
+        result["url"] = {
+            "learnUrls":          _ut(pbu, "learn_urls"),
+            "learnWebsocketUrls": _ut(pbu, "learn_websocket_urls"),
+            "maximumUrls":        _int(_ut(pbu, "maximum_urls"), 0),
+            "collapseUrls":       _ub(pbu, "collapse_urls"),
+            "classifyUrls":       _ub(pbu, "classify_urls"),
+        }
+
+    pbh = _try("policy_builder_header")
+    if pbh is not None:
+        result["header"] = {
+            "validHostNames": _ub(pbh, "valid_host_names"),
+            "maximumHosts":   _int(_ut(pbh, "maximum_hosts"), 0),
+        }
+
+    pbrp = _try("policy_builder_redirection_protection")
+    if pbrp is not None:
+        result["redirectionProtection"] = {
+            "learnRedirectionDomains":   _ut(pbrp, "learn_redirection_domains"),
+            "maximumRedirectionDomains": _int(_ut(pbrp, "maximum_redirection_domains"), 0),
+        }
+
+    pbsl = _try("policy_builder_sessions_and_logins")
+    if pbsl is not None:
+        result["sessionsAndLogins"] = {
+            "learnLoginPages": _ub(pbsl, "flg_learn_login_pages"),
+        }
+
+    pbst = _try("policy_builder_server_technologies")
+    if pbst is not None:
+        result["serverTechnologies"] = {
+            "learnServerTechnologies": _ub(pbst, "learn_server_technologies"),
+        }
+
+    pbcc = _try("policy_builder_central_configuration")
+    if pbcc is not None:
+        result["centralConfiguration"] = {
+            "buildingMode":         _ut(pbcc, "building_mode"),
+            "eventCorrelationMode": _ut(pbcc, "event_correlation_mode"),
+        }
+
+    return result
+
+
 def _parse_policy_builder(root) -> Dict:
-    pb = _find(root, "policy-builder")
+    # Try underscore variant (real AWAF exports) then hyphen
+    pb = _find(root, "policy_builder") or _find(root, "policy-builder")
     if pb is None:
         return {}
+
+    def _u(tag: str, default: str = "") -> str:
+        val = _text(pb, tag, "")
+        return val if val else _text(pb, tag.replace("_", "-"), default)
+
+    def _ub(tag: str, default: bool = False) -> bool:
+        ch = _find(pb, tag)
+        if ch is None:
+            ch = _find(pb, tag.replace("_", "-"))
+        return _bool(ch.text) if ch is not None and ch.text else default
+
     result: Dict[str, Any] = {
-        "learningMode":       _text(pb, "learning-mode", "disabled"),
+        "learningMode":                     _u("learning_mode", "disabled"),
+        "clientSidePolicyBuilding":         _ub("client_side_policy_building"),
+        "learnFromResponses":               _ub("learn_from_responses"),
+        "learnInactiveEntities":            _ub("learn_inactive_entities"),
+        "inactiveEntityInactivityDuration": _int(_u("inactive_entity_inactivity_duration_in_seconds"), 0),
+        "enableFullPolicyInspection":       _ub("enable_full_policy_inspection"),
+        "autoApplyFrequency":               _u("auto_apply_frequency"),
+        "autoApplyStartTime":               _u("auto_apply_start_time"),
+        "autoApplyEndTime":                 _u("auto_apply_end_time"),
+        "applyOnAllDays":                   _ub("apply_on_all_days"),
+        "applyAtAllTimes":                  _ub("apply_at_all_times"),
+        "learnOnlyFromNonBotTraffic":       _ub("learn_only_from_non_bot_traffic"),
+        "fullyAutomatic":                   _ub("fully_automatic"),
+        "allTrustedIps":                    _u("all_trusted_ips"),
+        "responseCodes": [
+            c.text.strip()
+            for c in pb
+            if _strip_ns(c.tag) in ("response_code", "response-code") and c.text
+        ],
     }
-    rsc_el = _find(pb, "response-status-codes")
-    if rsc_el is not None:
-        result["responseStatusCodes"] = [
-            _int(c.text) for c in _findall(rsc_el, "response-status-code") if c.text
-        ]
+
+    tsc = _find(pb, "track_site_changes")
+    if tsc is None:
+        tsc = _find(pb, "track-site-changes")
+    if tsc is not None:
+        result["trackSiteChanges"] = _parse_pb_traffic_sources(tsc)
+
+    lr = _find(pb, "loosen_rule")
+    if lr is None:
+        lr = _find(pb, "loosen-rule")
+    if lr is not None:
+        result["loosenRule"] = _parse_pb_traffic_sources(lr)
+
+    tr = _find(pb, "tighten_rule")
+    if tr is None:
+        tr = _find(pb, "tighten-rule")
+    if tr is not None:
+        def _tu(t): return _text(tr, t) or _text(tr, t.replace("_", "-"))
+        result["tightenRule"] = {
+            "totalRequests":                  _int(_tu("total_requests"), 0),
+            "minimumInterval":                _int(_tu("minimum_interval"), 0),
+            "maxModificationSuggestionScore": _int(_tu("max_modification_suggestion_score"), 0),
+        }
+
+    result.update(_parse_pb_subsections(root))
     return result
 
 
