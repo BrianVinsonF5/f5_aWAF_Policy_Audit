@@ -265,64 +265,116 @@ class PolicyExporter:
         """
         Enrich each policy dict in-place with a ``virtual_servers`` list.
 
-        Each entry in the list is a dict with keys:
-          name, fullPath, destination, ip, port
+        Issues a single GET to::
 
-        This is a best-effort operation: individual failures are logged at
-        DEBUG level and result in an empty list for the affected policy.
+            /mgmt/tm/asm/policies?$select=name,fullPath,virtualServers,manualVirtualServers
+
+        to collect both direct and manual LTM-policy-based VS associations in
+        one API call, then resolves each VS reference to a full detail dict.
+
+        Two fields are queried because BIG-IP tracks associations in two places:
+
+        * ``virtualServers``       – VSes with the ASM policy attached directly
+                                    via the Security > Policies GUI tab.  BIG-IP
+                                    auto-creates an ``asm_auto_l7_policy__<vs>``
+                                    LTM policy for each of these.
+        * ``manualVirtualServers`` – VSes that reference the ASM policy through
+                                    a manually-created Local Traffic Policy with
+                                    ASM control actions (e.g. Host-Header routing
+                                    rules).  Querying only ``virtualServers``
+                                    misses these entirely.
+
+        Each entry in ``virtual_servers`` is a dict with keys:
+          name, fullPath, destination, ip, port, association_type, ltm_policies
+
+        ``association_type`` is ``"direct"`` for ``virtualServers`` entries and
+        ``"manual"`` for ``manualVirtualServers`` entries.
+
+        This is a best-effort operation: failures are logged and result in an
+        empty list for the affected policy.
         """
         self.log.info("Fetching virtual server bindings for %d policies …", len(policies))
+        vs_map = self._fetch_policy_vs_map()
         for policy in policies:
-            policy["virtual_servers"] = self._get_policy_virtual_servers(
-                policy.get("id", ""), policy.get("fullPath", "")
+            full_path = policy.get("fullPath", "")
+            vs_data = vs_map.get(full_path, {})
+            policy["virtual_servers"] = self._resolve_vs_refs(
+                vs_data.get("virtualServers", []),
+                vs_data.get("manualVirtualServers", []),
+                full_path,
             )
 
-    def _get_policy_virtual_servers(self, policy_id: str, policy_path: str) -> List[Dict]:
+    def _fetch_policy_vs_map(self) -> Dict[str, Dict]:
         """
-        Return virtual server details for a single ASM policy.
+        Return a map of policy fullPath → {virtualServers, manualVirtualServers}.
 
-        Tries the ``/mgmt/tm/asm/policies/{id}/virtual-servers`` sub-collection
-        first (works on BIG-IP 12.1+).  Falls back to an empty list on any error.
+        Makes a single GET request::
+
+            GET /mgmt/tm/asm/policies?$select=name,fullPath,virtualServers,manualVirtualServers
+
+        On failure the map is empty and enrichment will silently yield no
+        virtual server bindings (already logged as a warning).
         """
-        if not policy_id:
-            return []
-
         try:
             data = self.client.get(
-                f"/mgmt/tm/asm/policies/{policy_id}/virtual-servers"
+                "/mgmt/tm/asm/policies",
+                params={"$select": "name,fullPath,virtualServers,manualVirtualServers"},
             )
         except Exception as exc:
-            self.log.debug(
-                "Could not retrieve virtual-server bindings for %s: %s",
-                policy_path, exc,
+            self.log.warning(
+                "Could not fetch policy VS associations: %s. "
+                "Virtual server bindings will be empty.",
+                exc,
             )
-            return []
+            return {}
 
-        results = []
+        result: Dict[str, Dict] = {}
         for item in data.get("items", []):
-            # The sub-collection item may carry the VS path directly as 'name'
-            # or as a self-link such as:
-            #   https://localhost/mgmt/tm/ltm/virtual/~Common~my_vs?ver=…
-            vs_path = item.get("name", "")
-            link = item.get("selfLink", "") or item.get("link", "")
+            full_path = item.get("fullPath", "")
+            if not full_path.startswith("/"):
+                full_path = f"/Common/{full_path}"
+            result[full_path] = {
+                "virtualServers":       item.get("virtualServers", []),
+                "manualVirtualServers": item.get("manualVirtualServers", []),
+            }
+        return result
 
-            if not vs_path and link:
-                try:
-                    # Extract /mgmt/tm/ltm/virtual/~Common~my_vs
-                    after = link.split("/mgmt/tm/ltm/virtual/")[1].split("?")[0]
-                    # Tilde-encoded path → slash-separated path
-                    vs_path = "/" + after.replace("~", "/").lstrip("/")
-                except (IndexError, AttributeError):
-                    self.log.debug("Unparseable VS link for %s: %s", policy_path, link)
+    def _resolve_vs_refs(
+        self,
+        direct_refs: List,
+        manual_refs: List,
+        policy_path: str,
+    ) -> List[Dict]:
+        """
+        Resolve VS path references from ``virtualServers`` and
+        ``manualVirtualServers`` to full VS detail dicts.
+
+        Each ref may be a plain string path or a dict with a ``fullPath`` /
+        ``name`` key — both formats appear across BIG-IP versions.
+
+        Returns a deduplicated list of VS detail dicts, each extended with:
+          association_type – ``"direct"``  (from ``virtualServers``)
+                          – ``"manual"``  (from ``manualVirtualServers``)
+        """
+        results: List[Dict] = []
+        seen: set = set()
+
+        def _add(refs: List, assoc_type: str) -> None:
+            for ref in refs:
+                vs_path = (
+                    ref if isinstance(ref, str)
+                    else ref.get("fullPath") or ref.get("name", "")
+                )
+                if not vs_path or vs_path in seen:
                     continue
+                seen.add(vs_path)
+                vs_info = self._get_vs_destination(vs_path)
+                if vs_info:
+                    vs_info["association_type"] = assoc_type
+                    results.append(vs_info)
 
-            if not vs_path:
-                continue
-
-            vs_info = self._get_vs_destination(vs_path)
-            if vs_info:
-                results.append(vs_info)
-
+        _add(direct_refs, "direct")
+        _add(manual_refs, "manual")
         return results
 
     def _get_vs_destination(self, vs_full_path: str) -> Optional[Dict]:

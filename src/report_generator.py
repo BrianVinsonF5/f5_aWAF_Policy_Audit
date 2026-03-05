@@ -119,9 +119,10 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
     lines.append("### Virtual Server Bindings")
     lines.append("")
     if vs_list:
-        lines.append("| Virtual Server | IP Address | Port | Local Traffic Policies |")
-        lines.append("|----------------|:----------:|:----:|------------------------|")
+        lines.append("| Virtual Server | IP Address | Port | Association | Local Traffic Policies |")
+        lines.append("|----------------|:----------:|:----:|:-----------:|------------------------|")
         for vs in vs_list:
+            assoc = vs.get("association_type", "direct")
             ltm_names = ", ".join(
                 f"`{p.get('fullPath', p.get('name', ''))}`"
                 for p in vs.get("ltm_policies", [])
@@ -130,6 +131,7 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
                 f"| `{vs.get('fullPath', vs.get('name', ''))}` "
                 f"| {vs.get('ip', '—')} "
                 f"| {vs.get('port', '—')} "
+                f"| {assoc} "
                 f"| {ltm_names} |"
             )
         lines.append("")
@@ -501,6 +503,7 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
             vs_name = _e(vs.get('fullPath', vs.get('name', '')))
             vs_ip   = _e(vs.get('ip', '—'))
             vs_port = _e(vs.get('port', '—'))
+            assoc   = _e(vs.get('association_type', 'direct'))
             ltm_policies = vs.get("ltm_policies", [])
             ltm_cell = (
                 ", ".join(f"<code>{_e(p.get('fullPath', p.get('name','')))}</code>"
@@ -511,6 +514,7 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
                 f"<tr>"
                 f"<td style='padding-left:20px'>&#8627; <code>{vs_name}</code></td>"
                 f"<td>{vs_ip}:{vs_port}</td>"
+                f"<td>{assoc}</td>"
                 f"<td>{ltm_cell}</td>"
                 f"</tr>"
             )
@@ -520,6 +524,7 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
             f"<thead><tr>"
             f"<th style='text-align:left;font-weight:normal;color:#555'>Name</th>"
             f"<th style='text-align:left;font-weight:normal;color:#555'>IP:Port</th>"
+            f"<th style='text-align:left;font-weight:normal;color:#555'>Association</th>"
             f"<th style='text-align:left;font-weight:normal;color:#555'>Local Traffic Policies</th>"
             f"</tr></thead><tbody>"
             + "".join(vs_rows) +
@@ -1020,7 +1025,7 @@ def _write_summary_md(results: List[ComparisonResult], reports_dir: Path) -> Non
         totals = r.summary.get("totals", {})
         if r.virtual_servers:
             vs_cell = "<br>".join(
-                f"`{vs.get('fullPath', vs.get('name', ''))}` ({vs.get('ip', '?')}:{vs.get('port', '?')})"
+                f"`{vs.get('fullPath', vs.get('name', ''))}` ({vs.get('ip', '?')}:{vs.get('port', '?')}) [{vs.get('association_type', 'direct')}]"
                 for vs in r.virtual_servers
             )
         else:
@@ -1050,6 +1055,7 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
                 f"<code>{_e(vs.get('fullPath', vs.get('name', '')))}</code>"
                 f"&nbsp;<span style='color:#555;font-size:.85em'>"
                 f"{_e(vs.get('ip', '?'))}:{_e(vs.get('port', '?'))}"
+                f"&nbsp;[{_e(vs.get('association_type', 'direct'))}]"
                 f"</span></div>"
                 for vs in r.virtual_servers
             )
