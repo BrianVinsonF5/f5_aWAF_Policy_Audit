@@ -149,7 +149,7 @@ class PolicyExporter:
         Failures are non-fatal: the hostname will be an empty string and the
         mgmt_ip will still be populated from the connection target.
         """
-        mgmt_ip = self.client.base_url.removeprefix("https://")
+        mgmt_ip = self.client.base_url[len("https://"):] if self.client.base_url.startswith("https://") else self.client.base_url
         hostname = ""
         try:
             data = self.client.get(
