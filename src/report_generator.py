@@ -100,6 +100,27 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
         f"- **Compliance Score:** {score:.1f}% — **{status}** (threshold: {_PASS_THRESHOLD:.0f}%)",
         "",
     ]
+    # Virtual server bindings
+    vs_list = result.virtual_servers
+    if vs_list:
+        lines.append("### Virtual Server Bindings")
+        lines.append("")
+        lines.append("| Virtual Server | IP Address | Port |")
+        lines.append("|----------------|:----------:|:----:|")
+        for vs in vs_list:
+            lines.append(
+                f"| `{vs.get('fullPath', vs.get('name', ''))}` "
+                f"| {vs.get('ip', '—')} "
+                f"| {vs.get('port', '—')} |"
+            )
+        lines.append("")
+    else:
+        lines += [
+            "### Virtual Server Bindings",
+            "",
+            "*No virtual server bindings found for this policy.*",
+            "",
+        ]
 
 
 def _md_policy_builder_status(lines: List[str], result: ComparisonResult) -> None:
@@ -431,6 +452,33 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
     score_class = "score-pass" if score >= _PASS_THRESHOLD else "score-fail"
     badge_pf = f'<span class="badge badge-{pass_fail.lower()}">{pass_fail}</span>'
 
+    # Build virtual server rows for the meta table
+    vs_list = result.virtual_servers
+    if vs_list:
+        vs_rows = []
+        for vs in vs_list:
+            vs_name = _e(vs.get('fullPath', vs.get('name', '')))
+            vs_ip   = _e(vs.get('ip', '—'))
+            vs_port = _e(vs.get('port', '—'))
+            vs_rows.append(
+                f"<tr>"
+                f"<td style='padding-left:20px'>&#8627; {vs_name}</td>"
+                f"<td>{vs_ip}:{vs_port}</td>"
+                f"</tr>"
+            )
+        vs_html = (
+            f"<tr><td>Virtual Server Bindings</td><td>"
+            f"<table style='width:100%;border-collapse:collapse'>"
+            f"<thead><tr>"
+            f"<th style='text-align:left;font-weight:normal;color:#555'>Name</th>"
+            f"<th style='text-align:left;font-weight:normal;color:#555'>IP:Port</th>"
+            f"</tr></thead><tbody>"
+            + "".join(vs_rows) +
+            f"</tbody></table></td></tr>"
+        )
+    else:
+        vs_html = "<tr><td>Virtual Server Bindings</td><td><em>None found</em></td></tr>"
+
     parts = [
         "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>",
         f"<title>WAF Audit: {_e(result.policy_path)}</title>",
@@ -442,6 +490,7 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         f"<tr><td>Policy</td><td><code>{_e(result.policy_path)}</code></td></tr>",
         f"<tr><td>Partition</td><td>{_e(result.partition)}</td></tr>",
         f"<tr><td>Enforcement Mode</td><td>{_e(result.enforcement_mode)}</td></tr>",
+        vs_html,
         f"<tr><td>Baseline Policy</td><td>{_e(result.baseline_name)}</td></tr>",
         f"<tr><td>Audit Date</td><td>{_e(result.timestamp)}</td></tr>",
         f"<tr><td>Compliance Score</td><td><strong>{score:.1f}%</strong> {badge_pf}</td></tr>",
@@ -810,14 +859,22 @@ def _write_summary_md(results: List[ComparisonResult], reports_dir: Path) -> Non
         "",
         "Policies sorted by compliance score (lowest first).",
         "",
-        "| Policy | Partition | Enforcement | Score | Status | Critical | Warning | Info |",
-        "|--------|-----------|-------------|-------|--------|----------|---------|------|",
+        "| Policy | Partition | Enforcement | Virtual Servers | Score | Status | Critical | Warning | Info |",
+        "|--------|-----------|-------------|-----------------|-------|--------|----------|---------|------|",
     ]
     for r in results:
         status = "PASS" if r.score >= _PASS_THRESHOLD else "FAIL"
         totals = r.summary.get("totals", {})
+        if r.virtual_servers:
+            vs_cell = "<br>".join(
+                f"`{vs.get('fullPath', vs.get('name', ''))}` ({vs.get('ip', '?')}:{vs.get('port', '?')})"
+                for vs in r.virtual_servers
+            )
+        else:
+            vs_cell = "*(none)*"
         lines.append(
             f"| `{r.policy_path}` | {r.partition} | {r.enforcement_mode} "
+            f"| {vs_cell} "
             f"| {r.score:.1f}% | {status} "
             f"| {totals.get('critical',0)} | {totals.get('warning',0)} | {totals.get('info',0)} |"
         )
@@ -833,11 +890,26 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
         badge_cls = "pass" if status == "PASS" else "fail"
         totals = r.summary.get("totals", {})
         score_class = "score-pass" if r.score >= _PASS_THRESHOLD else "score-fail"
+
+        if r.virtual_servers:
+            vs_items = "".join(
+                f"<div style='white-space:nowrap'>"
+                f"<code>{_e(vs.get('fullPath', vs.get('name', '')))}</code>"
+                f"&nbsp;<span style='color:#555;font-size:.85em'>"
+                f"{_e(vs.get('ip', '?'))}:{_e(vs.get('port', '?'))}"
+                f"</span></div>"
+                for vs in r.virtual_servers
+            )
+            vs_cell = vs_items
+        else:
+            vs_cell = "<em style='color:#999'>none</em>"
+
         rows.append(
             f"<tr>"
             f"<td><code>{_e(r.policy_path)}</code></td>"
             f"<td>{_e(r.partition)}</td>"
             f"<td>{_e(r.enforcement_mode)}</td>"
+            f"<td>{vs_cell}</td>"
             f"<td>"
             f"  <div class='score-bar'><div class='{score_class} score-fill' style='width:{min(r.score,100):.1f}%'></div></div>"
             f"  {r.score:.1f}%"
@@ -859,6 +931,7 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
         "<table class='summary-table findings'>"
         "<thead><tr>"
         "<th>Policy</th><th>Partition</th><th>Enforcement</th>"
+        "<th>Virtual Servers</th>"
         "<th>Score</th><th>Status</th><th>Critical</th><th>Warning</th><th>Info</th>"
         "</tr></thead><tbody>"
         + "".join(rows) +

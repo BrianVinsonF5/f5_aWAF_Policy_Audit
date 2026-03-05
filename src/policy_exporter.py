@@ -15,6 +15,36 @@ _POLL_INTERVAL = 3       # seconds between status polls
 _POLL_TIMEOUT  = 120     # max seconds to wait for a single export task
 
 
+def _parse_destination(destination: str) -> Tuple[str, str]:
+    """
+    Parse an F5 LTM virtual server destination string into (ip, port).
+
+    F5 formats:
+      /Common/10.1.1.1:80       →  ("10.1.1.1", "80")
+      /Common/10.1.1.1:443      →  ("10.1.1.1", "443")
+      /Common/2001:db8::1.443   →  ("2001:db8::1", "443")  IPv6 uses dot for port
+      10.1.1.1:8080             →  ("10.1.1.1", "8080")
+    """
+    raw = destination
+    # Strip leading partition component: /Common/10.0.0.1:80  →  10.0.0.1:80
+    if raw.startswith('/'):
+        stripped = raw.strip('/')
+        parts = stripped.split('/', 1)
+        raw = parts[1] if len(parts) == 2 else parts[0]
+
+    # IPv6: multiple colons — F5 uses a trailing dot before the port
+    if raw.count(':') > 1 and '.' in raw:
+        last_dot = raw.rfind('.')
+        return raw[:last_dot], raw[last_dot + 1:]
+
+    # IPv4 / named address: single colon separates IP and port
+    if ':' in raw:
+        ip, _, port = raw.rpartition(':')
+        return ip, port
+
+    return raw, ""
+
+
 class ExportError(Exception):
     pass
 
@@ -32,6 +62,7 @@ class PolicyExporter:
     )
     _EXPORT_TASK_EP   = "/mgmt/tm/asm/tasks/export-policy"
     _DOWNLOAD_BASE_EP = "/mgmt/tm/asm/file-transfer/downloads"
+    _VIRTUAL_EP       = "/mgmt/tm/ltm/virtual"
 
     def __init__(
         self,
@@ -145,6 +176,104 @@ class PolicyExporter:
             ))
         print(sep)
         print(f"Total: {len(policies)} policies\n")
+
+    # ── Virtual server enrichment ──────────────────────────────────────────────
+
+    def enrich_with_virtual_servers(self, policies: List[Dict]) -> None:
+        """
+        Enrich each policy dict in-place with a ``virtual_servers`` list.
+
+        Each entry in the list is a dict with keys:
+          name, fullPath, destination, ip, port
+
+        This is a best-effort operation: individual failures are logged at
+        DEBUG level and result in an empty list for the affected policy.
+        """
+        self.log.info("Fetching virtual server bindings for %d policies …", len(policies))
+        for policy in policies:
+            policy["virtual_servers"] = self._get_policy_virtual_servers(
+                policy.get("id", ""), policy.get("fullPath", "")
+            )
+
+    def _get_policy_virtual_servers(self, policy_id: str, policy_path: str) -> List[Dict]:
+        """
+        Return virtual server details for a single ASM policy.
+
+        Tries the ``/mgmt/tm/asm/policies/{id}/virtual-servers`` sub-collection
+        first (works on BIG-IP 12.1+).  Falls back to an empty list on any error.
+        """
+        if not policy_id:
+            return []
+
+        try:
+            data = self.client.get(
+                f"/mgmt/tm/asm/policies/{policy_id}/virtual-servers"
+            )
+        except Exception as exc:
+            self.log.debug(
+                "Could not retrieve virtual-server bindings for %s: %s",
+                policy_path, exc,
+            )
+            return []
+
+        results = []
+        for item in data.get("items", []):
+            # The sub-collection item may carry the VS path directly as 'name'
+            # or as a self-link such as:
+            #   https://localhost/mgmt/tm/ltm/virtual/~Common~my_vs?ver=…
+            vs_path = item.get("name", "")
+            link = item.get("selfLink", "") or item.get("link", "")
+
+            if not vs_path and link:
+                try:
+                    # Extract /mgmt/tm/ltm/virtual/~Common~my_vs
+                    after = link.split("/mgmt/tm/ltm/virtual/")[1].split("?")[0]
+                    # Tilde-encoded path → slash-separated path
+                    vs_path = "/" + after.replace("~", "/").lstrip("/")
+                except (IndexError, AttributeError):
+                    self.log.debug("Unparseable VS link for %s: %s", policy_path, link)
+                    continue
+
+            if not vs_path:
+                continue
+
+            vs_info = self._get_vs_destination(vs_path)
+            if vs_info:
+                results.append(vs_info)
+
+        return results
+
+    def _get_vs_destination(self, vs_full_path: str) -> Optional[Dict]:
+        """
+        GET a single LTM virtual server and return its name, fullPath,
+        destination, ip, and port.
+
+        The path is tilde-encoded for the REST URL:
+          /Common/my_vs  →  /mgmt/tm/ltm/virtual/~Common~my_vs
+        """
+        # Build the tilde-encoded URL segment
+        encoded = vs_full_path.strip("/").replace("/", "~")
+        api_path = f"{self._VIRTUAL_EP}/~{encoded}"
+
+        try:
+            data = self.client.get(
+                api_path,
+                params={"$select": "name,fullPath,destination,partition"},
+            )
+        except Exception as exc:
+            self.log.debug("Could not fetch VS %s: %s", vs_full_path, exc)
+            return None
+
+        destination = data.get("destination", "")
+        ip, port = _parse_destination(destination)
+
+        return {
+            "name":        data.get("name", ""),
+            "fullPath":    data.get("fullPath", vs_full_path),
+            "destination": destination,
+            "ip":          ip,
+            "port":        port,
+        }
 
     # ── Export workflow ────────────────────────────────────────────────────────
 

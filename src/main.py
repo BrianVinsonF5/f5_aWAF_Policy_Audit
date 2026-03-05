@@ -275,6 +275,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     exporter.print_discovery_table(policies)
 
+    # ── Enrich with virtual server bindings ───────────────────────────────────
+    exporter.enrich_with_virtual_servers(policies)
+
     # ── Export policies ───────────────────────────────────────────────────────
     successes, failures = exporter.export_all(policies)
     if failures:
@@ -334,6 +337,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             target=target_data,
             policy_meta=meta,
             baseline_name=baseline_name,
+            virtual_servers=policy.get("virtual_servers", []),
         )
         all_results.append(cmp_result)
 
