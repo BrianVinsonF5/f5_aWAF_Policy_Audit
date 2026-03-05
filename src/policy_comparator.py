@@ -56,6 +56,11 @@ class ComparisonResult:
     baseline_violations: List[Dict] = field(default_factory=list)
     policy_builder_target:   Dict = field(default_factory=dict)
     policy_builder_baseline: Dict = field(default_factory=dict)
+    # Virtual server(s) this policy is applied to (populated from LTM API)
+    virtual_servers: List[Dict] = field(default_factory=list)
+    # Source BIG-IP device identity (hostname from sys/global-settings, mgmt IP from connection)
+    device_hostname: str = ""
+    device_mgmt_ip:  str = ""
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -65,12 +70,17 @@ def compare_policies(
     target: Dict,
     policy_meta: Optional[Dict] = None,
     baseline_name: str = "baseline",
+    virtual_servers: Optional[List[Dict]] = None,
+    device_hostname: str = "",
+    device_mgmt_ip:  str = "",
 ) -> ComparisonResult:
     """
     Compare a target policy dict against a baseline policy dict.
 
     Both dicts must come from policy_parser.parse_policy().
     policy_meta is the result of policy_parser.get_policy_metadata() for target.
+    virtual_servers is a list of dicts produced by PolicyExporter.enrich_with_virtual_servers().
+    device_hostname / device_mgmt_ip identify the BIG-IP the policy was exported from.
     """
     meta = policy_meta or {}
     result = ComparisonResult(
@@ -80,6 +90,9 @@ def compare_policies(
         enforcement_mode=target.get("general", {}).get("enforcementMode", "transparent"),
         baseline_name=baseline_name,
         timestamp=iso_timestamp(),
+        virtual_servers=virtual_servers or [],
+        device_hostname=device_hostname,
+        device_mgmt_ip=device_mgmt_ip,
     )
 
     # Run each section comparator

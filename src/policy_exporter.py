@@ -15,6 +15,85 @@ _POLL_INTERVAL = 3       # seconds between status polls
 _POLL_TIMEOUT  = 120     # max seconds to wait for a single export task
 
 
+def _parse_destination(destination: str) -> Tuple[str, str]:
+    """
+    Parse an F5 LTM virtual server destination string into (ip, port).
+
+    F5 formats:
+      /Common/10.1.1.1:80       →  ("10.1.1.1", "80")
+      /Common/10.1.1.1:443      →  ("10.1.1.1", "443")
+      /Common/2001:db8::1.443   →  ("2001:db8::1", "443")  IPv6 uses dot for port
+      10.1.1.1:8080             →  ("10.1.1.1", "8080")
+    """
+    raw = destination
+    # Strip leading partition component: /Common/10.0.0.1:80  →  10.0.0.1:80
+    if raw.startswith('/'):
+        stripped = raw.strip('/')
+        parts = stripped.split('/', 1)
+        raw = parts[1] if len(parts) == 2 else parts[0]
+
+    # IPv6: multiple colons — F5 uses a trailing dot before the port
+    if raw.count(':') > 1 and '.' in raw:
+        last_dot = raw.rfind('.')
+        return raw[:last_dot], raw[last_dot + 1:]
+
+    # IPv4 / named address: single colon separates IP and port
+    if ':' in raw:
+        ip, _, port = raw.rpartition(':')
+        return ip, port
+
+    return raw, ""
+
+
+def _extract_host_conditions(rule: Dict) -> List[str]:
+    """
+    Extract host-name values from an LTM policy rule's conditions.
+
+    F5 BIG-IP uses several condition types to match the HTTP Host header:
+      - httpHeader with name == "host"  (most common, all versions)
+      - httpUri   with host == true     (URI component matching)
+      - httpHost                        (dedicated type in newer BIG-IP versions)
+
+    Returns a deduplicated, ordered list of host strings.
+    """
+    hosts: List[str] = []
+    for cond in rule.get("conditionsReference", {}).get("items", []):
+        ctype = cond.get("type", "").lower()
+        if ctype == "httpheader" and cond.get("name", "").lower() == "host":
+            hosts.extend(cond.get("values", []))
+        elif ctype == "httpuri" and cond.get("host"):
+            hosts.extend(cond.get("values", []))
+        elif ctype == "httphost":
+            hosts.extend(cond.get("values", []))
+    # Deduplicate while preserving order
+    seen: set = set()
+    unique: List[str] = []
+    for h in hosts:
+        if h not in seen:
+            seen.add(h)
+            unique.append(h)
+    return unique
+
+
+def _extract_waf_policy_action(rule: Dict) -> str:
+    """
+    Extract the WAF/ASM security policy path from an LTM policy rule's actions.
+
+    F5 uses two action types for WAF association:
+      - type "asm"  with a "policy" field        (BIG-IP 12.1+)
+      - type "wam"  with a "wamPolicy" / "policy" field  (older versions)
+
+    Returns the full path of the ASM policy (e.g. "/Common/my_waf") or "".
+    """
+    for action in rule.get("actionsReference", {}).get("items", []):
+        atype = action.get("type", "").lower()
+        if atype == "asm" and action.get("enable"):
+            return action.get("policy", "")
+        if atype == "wam" and action.get("enable"):
+            return action.get("wamPolicy", "") or action.get("policy", "")
+    return ""
+
+
 class ExportError(Exception):
     pass
 
@@ -24,14 +103,17 @@ class PolicyExporter:
     Discovers all ASM/AWAF policies across partitions and exports them.
     """
 
-    _PARTITION_EP = "/mgmt/tm/auth/partition"
-    _POLICY_EP    = (
+    _PARTITION_EP    = "/mgmt/tm/auth/partition"
+    _POLICY_EP       = (
         "/mgmt/tm/asm/policies"
         "?$select=id,name,fullPath,active,enforcementMode,type,"
         "versionDatetime,hasParent,protocolIndependent"
     )
-    _EXPORT_TASK_EP   = "/mgmt/tm/asm/tasks/export-policy"
+    _EXPORT_TASK_EP  = "/mgmt/tm/asm/tasks/export-policy"
     _DOWNLOAD_BASE_EP = "/mgmt/tm/asm/file-transfer/downloads"
+    _VIRTUAL_EP      = "/mgmt/tm/ltm/virtual"
+    _LTM_POLICY_EP   = "/mgmt/tm/ltm/policy"
+    _SYS_GLOBAL_EP   = "/mgmt/tm/sys/global-settings"
 
     def __init__(
         self,
@@ -47,6 +129,37 @@ class PolicyExporter:
         self.concurrent = concurrent_exports
         self.filter_partitions = [p.strip() for p in partitions] if partitions else []
         self.log = get_logger("policy_exporter")
+
+    # ── Device information ──────────────────────────────────────────────────────
+
+    def fetch_device_info(self) -> Dict:
+        """
+        Return basic identity information about the BIG-IP device.
+
+        Queries ``/mgmt/tm/sys/global-settings`` for the configured hostname
+        (the FQDN the administrator gave the device).  The management address
+        is the ``host`` value already used to open the HTTPS connection —
+        it may be an IP address or a DNS name depending on how the tool was
+        invoked.
+
+        Returns a dict with keys:
+          hostname   — BIG-IP system hostname (from global-settings), or ""
+          mgmt_ip    — the host/IP used to connect (from the client base URL)
+
+        Failures are non-fatal: the hostname will be an empty string and the
+        mgmt_ip will still be populated from the connection target.
+        """
+        mgmt_ip = self.client.base_url.removeprefix("https://")
+        hostname = ""
+        try:
+            data = self.client.get(
+                self._SYS_GLOBAL_EP,
+                params={"$select": "hostname"},
+            )
+            hostname = data.get("hostname", "")
+        except Exception as exc:
+            self.log.debug("Could not fetch device hostname: %s", exc)
+        return {"hostname": hostname, "mgmt_ip": mgmt_ip}
 
     # ── Discovery ──────────────────────────────────────────────────────────────
 
@@ -145,6 +258,175 @@ class PolicyExporter:
             ))
         print(sep)
         print(f"Total: {len(policies)} policies\n")
+
+    # ── Virtual server enrichment ──────────────────────────────────────────────
+
+    def enrich_with_virtual_servers(self, policies: List[Dict]) -> None:
+        """
+        Enrich each policy dict in-place with a ``virtual_servers`` list.
+
+        Each entry in the list is a dict with keys:
+          name, fullPath, destination, ip, port
+
+        This is a best-effort operation: individual failures are logged at
+        DEBUG level and result in an empty list for the affected policy.
+        """
+        self.log.info("Fetching virtual server bindings for %d policies …", len(policies))
+        for policy in policies:
+            policy["virtual_servers"] = self._get_policy_virtual_servers(
+                policy.get("id", ""), policy.get("fullPath", "")
+            )
+
+    def _get_policy_virtual_servers(self, policy_id: str, policy_path: str) -> List[Dict]:
+        """
+        Return virtual server details for a single ASM policy.
+
+        Tries the ``/mgmt/tm/asm/policies/{id}/virtual-servers`` sub-collection
+        first (works on BIG-IP 12.1+).  Falls back to an empty list on any error.
+        """
+        if not policy_id:
+            return []
+
+        try:
+            data = self.client.get(
+                f"/mgmt/tm/asm/policies/{policy_id}/virtual-servers"
+            )
+        except Exception as exc:
+            self.log.debug(
+                "Could not retrieve virtual-server bindings for %s: %s",
+                policy_path, exc,
+            )
+            return []
+
+        results = []
+        for item in data.get("items", []):
+            # The sub-collection item may carry the VS path directly as 'name'
+            # or as a self-link such as:
+            #   https://localhost/mgmt/tm/ltm/virtual/~Common~my_vs?ver=…
+            vs_path = item.get("name", "")
+            link = item.get("selfLink", "") or item.get("link", "")
+
+            if not vs_path and link:
+                try:
+                    # Extract /mgmt/tm/ltm/virtual/~Common~my_vs
+                    after = link.split("/mgmt/tm/ltm/virtual/")[1].split("?")[0]
+                    # Tilde-encoded path → slash-separated path
+                    vs_path = "/" + after.replace("~", "/").lstrip("/")
+                except (IndexError, AttributeError):
+                    self.log.debug("Unparseable VS link for %s: %s", policy_path, link)
+                    continue
+
+            if not vs_path:
+                continue
+
+            vs_info = self._get_vs_destination(vs_path)
+            if vs_info:
+                results.append(vs_info)
+
+        return results
+
+    def _get_vs_destination(self, vs_full_path: str) -> Optional[Dict]:
+        """
+        GET a single LTM virtual server and return its name, fullPath,
+        destination, ip, port, and any attached Local Traffic Policies.
+
+        The path is tilde-encoded for the REST URL:
+          /Common/my_vs  →  /mgmt/tm/ltm/virtual/~Common~my_vs
+        """
+        encoded = vs_full_path.strip("/").replace("/", "~")
+        api_path = f"{self._VIRTUAL_EP}/~{encoded}"
+
+        try:
+            data = self.client.get(
+                api_path,
+                params={"$select": "name,fullPath,destination,partition"},
+            )
+        except Exception as exc:
+            self.log.debug("Could not fetch VS %s: %s", vs_full_path, exc)
+            return None
+
+        destination = data.get("destination", "")
+        ip, port = _parse_destination(destination)
+
+        return {
+            "name":        data.get("name", ""),
+            "fullPath":    data.get("fullPath", vs_full_path),
+            "destination": destination,
+            "ip":          ip,
+            "port":        port,
+            "ltm_policies": self._get_vs_ltm_policies(api_path),
+        }
+
+    def _get_vs_ltm_policies(self, vs_api_path: str) -> List[Dict]:
+        """
+        Return the Local Traffic Policies attached to a virtual server.
+
+        Calls GET {vs_api_path}/policies, then for each attached LTM policy
+        fetches the full rule/condition/action tree so we can surface
+        host-header → WAF-policy mappings.
+
+        Returns a list of dicts, each with:
+          name, fullPath, rules
+        where each rule has:
+          name, host_conditions (list of str), waf_policy (str or "")
+        """
+        try:
+            data = self.client.get(f"{vs_api_path}/policies")
+        except Exception as exc:
+            self.log.debug("Could not fetch LTM policies for VS %s: %s", vs_api_path, exc)
+            return []
+
+        results = []
+        for item in data.get("items", []):
+            name = item.get("name", "")
+            partition = item.get("partition", "Common")
+            full_path = item.get("fullPath", f"/{partition}/{name}")
+            rules = self._get_ltm_policy_rules(full_path)
+            results.append({
+                "name":     name,
+                "fullPath": full_path,
+                "rules":    rules,
+            })
+
+        return results
+
+    def _get_ltm_policy_rules(self, policy_full_path: str) -> List[Dict]:
+        """
+        Fetch an LTM (Local Traffic Policy) with its rules, conditions, and
+        actions expanded in a single API call.
+
+        Parses each rule to extract:
+          - host_conditions: host names matched by httpHeader/httpUri/httpHost
+            conditions (the "selector" for which web application this rule applies to)
+          - waf_policy: the ASM/WAF security policy path applied by the rule's
+            action (empty string if no ASM action is present)
+
+        Only rules that have at least one host condition or a WAF policy action
+        are included in the returned list.
+
+        Returns a list of dicts: {name, host_conditions, waf_policy}
+        """
+        encoded  = policy_full_path.strip("/").replace("/", "~")
+        api_path = f"{self._LTM_POLICY_EP}/~{encoded}"
+
+        try:
+            data = self.client.get(api_path, params={"expandSubcollections": "true"})
+        except Exception as exc:
+            self.log.debug("Could not fetch LTM policy %s: %s", policy_full_path, exc)
+            return []
+
+        rules = []
+        for rule in data.get("rulesReference", {}).get("items", []):
+            host_conditions = _extract_host_conditions(rule)
+            waf_policy      = _extract_waf_policy_action(rule)
+            if host_conditions or waf_policy:
+                rules.append({
+                    "name":            rule.get("name", ""),
+                    "host_conditions": host_conditions,
+                    "waf_policy":      waf_policy,
+                })
+
+        return rules
 
     # ── Export workflow ────────────────────────────────────────────────────────
 

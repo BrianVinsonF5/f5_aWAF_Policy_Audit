@@ -88,8 +88,22 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
 def _md_header(lines: List[str], result: ComparisonResult) -> None:
     score = result.score
     status = "PASS" if score >= _PASS_THRESHOLD else "FAIL"
+
+    # Device identity line — show hostname (mgmt-ip) when both are available,
+    # otherwise fall back to whichever value is present.
+    if result.device_hostname and result.device_mgmt_ip:
+        device_line = f"`{result.device_hostname}` ({result.device_mgmt_ip})"
+    elif result.device_hostname:
+        device_line = f"`{result.device_hostname}`"
+    elif result.device_mgmt_ip:
+        device_line = result.device_mgmt_ip
+    else:
+        device_line = "*(unknown)*"
+
     lines += [
         "# WAF Policy Compliance Audit Report",
+        "",
+        f"**Source Device:** {device_line}",
         "",
         f"## Policy: `{result.policy_path}`",
         "",
@@ -100,6 +114,54 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
         f"- **Compliance Score:** {score:.1f}% — **{status}** (threshold: {_PASS_THRESHOLD:.0f}%)",
         "",
     ]
+    # Virtual server bindings
+    vs_list = result.virtual_servers
+    lines.append("### Virtual Server Bindings")
+    lines.append("")
+    if vs_list:
+        lines.append("| Virtual Server | IP Address | Port | Local Traffic Policies |")
+        lines.append("|----------------|:----------:|:----:|------------------------|")
+        for vs in vs_list:
+            ltm_names = ", ".join(
+                f"`{p.get('fullPath', p.get('name', ''))}`"
+                for p in vs.get("ltm_policies", [])
+            ) or "*(none)*"
+            lines.append(
+                f"| `{vs.get('fullPath', vs.get('name', ''))}` "
+                f"| {vs.get('ip', '—')} "
+                f"| {vs.get('port', '—')} "
+                f"| {ltm_names} |"
+            )
+        lines.append("")
+
+        # Per-VS LTM policy rule detail
+        for vs in vs_list:
+            for ltp in vs.get("ltm_policies", []):
+                rules = ltp.get("rules", [])
+                if not rules:
+                    continue
+                vs_path = vs.get('fullPath', vs.get('name', ''))
+                ltp_path = ltp.get('fullPath', ltp.get('name', ''))
+                lines += [
+                    f"#### LTM Policy `{ltp_path}` on `{vs_path}`",
+                    "",
+                    "| Rule | Host Condition(s) | WAF Security Policy |",
+                    "|------|:-----------------:|---------------------|",
+                ]
+                for rule in rules:
+                    hosts = ", ".join(
+                        f"`{h}`" for h in rule.get("host_conditions", [])
+                    ) or "*(any)*"
+                    waf = f"`{rule['waf_policy']}`" if rule.get("waf_policy") else "*(none)*"
+                    lines.append(
+                        f"| `{rule.get('name', '')}` | {hosts} | {waf} |"
+                    )
+                lines.append("")
+    else:
+        lines += [
+            "*No virtual server bindings found for this policy.*",
+            "",
+        ]
 
 
 def _md_policy_builder_status(lines: List[str], result: ComparisonResult) -> None:
@@ -431,6 +493,54 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
     score_class = "score-pass" if score >= _PASS_THRESHOLD else "score-fail"
     badge_pf = f'<span class="badge badge-{pass_fail.lower()}">{pass_fail}</span>'
 
+    # Build virtual server rows for the meta table
+    vs_list = result.virtual_servers
+    if vs_list:
+        vs_rows = []
+        for vs in vs_list:
+            vs_name = _e(vs.get('fullPath', vs.get('name', '')))
+            vs_ip   = _e(vs.get('ip', '—'))
+            vs_port = _e(vs.get('port', '—'))
+            ltm_policies = vs.get("ltm_policies", [])
+            ltm_cell = (
+                ", ".join(f"<code>{_e(p.get('fullPath', p.get('name','')))}</code>"
+                          for p in ltm_policies)
+                if ltm_policies else "<em>none</em>"
+            )
+            vs_rows.append(
+                f"<tr>"
+                f"<td style='padding-left:20px'>&#8627; <code>{vs_name}</code></td>"
+                f"<td>{vs_ip}:{vs_port}</td>"
+                f"<td>{ltm_cell}</td>"
+                f"</tr>"
+            )
+        vs_html = (
+            f"<tr><td>Virtual Server Bindings</td><td>"
+            f"<table style='width:100%;border-collapse:collapse'>"
+            f"<thead><tr>"
+            f"<th style='text-align:left;font-weight:normal;color:#555'>Name</th>"
+            f"<th style='text-align:left;font-weight:normal;color:#555'>IP:Port</th>"
+            f"<th style='text-align:left;font-weight:normal;color:#555'>Local Traffic Policies</th>"
+            f"</tr></thead><tbody>"
+            + "".join(vs_rows) +
+            f"</tbody></table></td></tr>"
+        )
+    else:
+        vs_html = "<tr><td>Virtual Server Bindings</td><td><em>None found</em></td></tr>"
+
+    # Device identity cell
+    if result.device_hostname and result.device_mgmt_ip:
+        device_cell = (
+            f"<strong>{_e(result.device_hostname)}</strong>"
+            f"&nbsp;<span style='color:#555;font-size:.9em'>({_e(result.device_mgmt_ip)})</span>"
+        )
+    elif result.device_hostname:
+        device_cell = f"<strong>{_e(result.device_hostname)}</strong>"
+    elif result.device_mgmt_ip:
+        device_cell = _e(result.device_mgmt_ip)
+    else:
+        device_cell = "<em>unknown</em>"
+
     parts = [
         "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>",
         f"<title>WAF Audit: {_e(result.policy_path)}</title>",
@@ -439,9 +549,11 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         f"<h1>WAF Policy Compliance Audit Report</h1>",
         "<div class='meta'>",
         "<table>",
+        f"<tr><td>Source Device</td><td>{device_cell}</td></tr>",
         f"<tr><td>Policy</td><td><code>{_e(result.policy_path)}</code></td></tr>",
         f"<tr><td>Partition</td><td>{_e(result.partition)}</td></tr>",
         f"<tr><td>Enforcement Mode</td><td>{_e(result.enforcement_mode)}</td></tr>",
+        vs_html,
         f"<tr><td>Baseline Policy</td><td>{_e(result.baseline_name)}</td></tr>",
         f"<tr><td>Audit Date</td><td>{_e(result.timestamp)}</td></tr>",
         f"<tr><td>Compliance Score</td><td><strong>{score:.1f}%</strong> {badge_pf}</td></tr>",
@@ -449,6 +561,11 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         f"<div class='score-bar'><div class='{score_class} score-fill' style='width:{min(score,100):.1f}%'></div></div>",
         "</div>",
     ]
+
+    # LTM policy rule detail (collapsible, after the meta block)
+    ltm_section = _html_ltm_policy_section(vs_list)
+    if ltm_section:
+        parts.append(ltm_section)
 
     # Policy Builder status banner + settings table
     parts.append(_html_policy_builder_status(result))
@@ -545,6 +662,75 @@ def _html_summary_table(result: ComparisonResult) -> str:
         "<thead><tr><th>Category</th><th>Critical</th><th>Warning</th><th>Info</th><th>Total</th></tr></thead>"
         "<tbody>" + "".join(rows) + "</tbody></table>"
     )
+
+
+def _html_ltm_policy_section(vs_list: List[Dict]) -> str:
+    """
+    Render a collapsible HTML section showing LTM policy rules for all
+    virtual servers that have Local Traffic Policies attached.
+
+    Each rule row shows: rule name | host condition(s) | WAF security policy.
+    Returns an empty string when there are no LTM policies to display.
+    """
+    # Collect (vs_path, ltp_path, [rules]) tuples that have content
+    entries = []
+    for vs in vs_list:
+        for ltp in vs.get("ltm_policies", []):
+            rules = ltp.get("rules", [])
+            if rules:
+                entries.append((
+                    vs.get("fullPath", vs.get("name", "")),
+                    ltp.get("fullPath", ltp.get("name", "")),
+                    rules,
+                ))
+
+    if not entries:
+        return ""
+
+    total_rules = sum(len(e[2]) for e in entries)
+    parts = [
+        f"<details open><summary>"
+        f"<h2 style='display:inline;font-size:1em'>"
+        f"Local Traffic Policy — Host-to-WAF Mappings ({total_rules} rule{'s' if total_rules != 1 else ''})"
+        f"</h2></summary>"
+        f"<div class='details-body'>"
+        f"<p style='margin:8px 0'>Rules from LTM policies that map host conditions "
+        f"to WAF security policies on each virtual server.</p>"
+    ]
+
+    for vs_path, ltp_path, rules in entries:
+        rows = []
+        for rule in rules:
+            hosts = rule.get("host_conditions", [])
+            host_cell = (
+                " ".join(f"<code>{_e(h)}</code>" for h in hosts)
+                if hosts else "<em>any</em>"
+            )
+            waf = rule.get("waf_policy", "")
+            waf_cell = f"<code>{_e(waf)}</code>" if waf else "<em style='color:#999'>none</em>"
+            rows.append(
+                f"<tr>"
+                f"<td><code>{_e(rule.get('name', ''))}</code></td>"
+                f"<td>{host_cell}</td>"
+                f"<td>{waf_cell}</td>"
+                f"</tr>"
+            )
+
+        parts.append(
+            f"<h3 style='margin:14px 0 4px'>"
+            f"<code>{_e(ltp_path)}</code>"
+            f" <span style='font-weight:normal;font-size:.85em;color:#555'>"
+            f"on <code>{_e(vs_path)}</code></span></h3>"
+            f"<table class='findings'>"
+            f"<thead><tr>"
+            f"<th>Rule</th><th>Host Condition(s)</th><th>WAF Security Policy</th>"
+            f"</tr></thead><tbody>"
+            + "".join(rows) +
+            f"</tbody></table>"
+        )
+
+    parts.append("</div></details>")
+    return "".join(parts)
 
 
 def _html_policy_builder_status(result: ComparisonResult) -> str:
@@ -805,19 +991,43 @@ def generate_summary_reports(
 
 
 def _write_summary_md(results: List[ComparisonResult], reports_dir: Path) -> None:
+    # All results come from the same device — use the first one
+    dev_hostname = results[0].device_hostname if results else ""
+    dev_mgmt_ip  = results[0].device_mgmt_ip  if results else ""
+    if dev_hostname and dev_mgmt_ip:
+        device_line = f"**Source Device:** `{dev_hostname}` ({dev_mgmt_ip})"
+    elif dev_hostname:
+        device_line = f"**Source Device:** `{dev_hostname}`"
+    elif dev_mgmt_ip:
+        device_line = f"**Source Device:** {dev_mgmt_ip}"
+    else:
+        device_line = ""
+
     lines = [
         "# WAF Policy Audit — Summary Report",
         "",
+    ]
+    if device_line:
+        lines += [device_line, ""]
+    lines += [
         "Policies sorted by compliance score (lowest first).",
         "",
-        "| Policy | Partition | Enforcement | Score | Status | Critical | Warning | Info |",
-        "|--------|-----------|-------------|-------|--------|----------|---------|------|",
+        "| Policy | Partition | Enforcement | Virtual Servers | Score | Status | Critical | Warning | Info |",
+        "|--------|-----------|-------------|-----------------|-------|--------|----------|---------|------|",
     ]
     for r in results:
         status = "PASS" if r.score >= _PASS_THRESHOLD else "FAIL"
         totals = r.summary.get("totals", {})
+        if r.virtual_servers:
+            vs_cell = "<br>".join(
+                f"`{vs.get('fullPath', vs.get('name', ''))}` ({vs.get('ip', '?')}:{vs.get('port', '?')})"
+                for vs in r.virtual_servers
+            )
+        else:
+            vs_cell = "*(none)*"
         lines.append(
             f"| `{r.policy_path}` | {r.partition} | {r.enforcement_mode} "
+            f"| {vs_cell} "
             f"| {r.score:.1f}% | {status} "
             f"| {totals.get('critical',0)} | {totals.get('warning',0)} | {totals.get('info',0)} |"
         )
@@ -833,11 +1043,26 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
         badge_cls = "pass" if status == "PASS" else "fail"
         totals = r.summary.get("totals", {})
         score_class = "score-pass" if r.score >= _PASS_THRESHOLD else "score-fail"
+
+        if r.virtual_servers:
+            vs_items = "".join(
+                f"<div style='white-space:nowrap'>"
+                f"<code>{_e(vs.get('fullPath', vs.get('name', '')))}</code>"
+                f"&nbsp;<span style='color:#555;font-size:.85em'>"
+                f"{_e(vs.get('ip', '?'))}:{_e(vs.get('port', '?'))}"
+                f"</span></div>"
+                for vs in r.virtual_servers
+            )
+            vs_cell = vs_items
+        else:
+            vs_cell = "<em style='color:#999'>none</em>"
+
         rows.append(
             f"<tr>"
             f"<td><code>{_e(r.policy_path)}</code></td>"
             f"<td>{_e(r.partition)}</td>"
             f"<td>{_e(r.enforcement_mode)}</td>"
+            f"<td>{vs_cell}</td>"
             f"<td>"
             f"  <div class='score-bar'><div class='{score_class} score-fill' style='width:{min(r.score,100):.1f}%'></div></div>"
             f"  {r.score:.1f}%"
@@ -849,16 +1074,39 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
             f"</tr>"
         )
 
+    dev_hostname = results[0].device_hostname if results else ""
+    dev_mgmt_ip  = results[0].device_mgmt_ip  if results else ""
+    if dev_hostname and dev_mgmt_ip:
+        device_html = (
+            f"<p style='margin:0 0 12px'><strong>Source Device:</strong> "
+            f"<strong>{_e(dev_hostname)}</strong>"
+            f"&nbsp;<span style='color:#555'>({_e(dev_mgmt_ip)})</span></p>"
+        )
+    elif dev_hostname:
+        device_html = (
+            f"<p style='margin:0 0 12px'><strong>Source Device:</strong> "
+            f"<strong>{_e(dev_hostname)}</strong></p>"
+        )
+    elif dev_mgmt_ip:
+        device_html = (
+            f"<p style='margin:0 0 12px'><strong>Source Device:</strong> "
+            f"{_e(dev_mgmt_ip)}</p>"
+        )
+    else:
+        device_html = ""
+
     content = (
         "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
         "<title>WAF Audit Summary</title>"
         + _CSS +
         "</head><body>"
         "<h1>WAF Policy Audit — Summary Report</h1>"
+        + device_html +
         "<p>Policies sorted by compliance score (lowest first).</p>"
         "<table class='summary-table findings'>"
         "<thead><tr>"
         "<th>Policy</th><th>Partition</th><th>Enforcement</th>"
+        "<th>Virtual Servers</th>"
         "<th>Score</th><th>Status</th><th>Critical</th><th>Warning</th><th>Info</th>"
         "</tr></thead><tbody>"
         + "".join(rows) +
