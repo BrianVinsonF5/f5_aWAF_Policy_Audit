@@ -88,8 +88,22 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
 def _md_header(lines: List[str], result: ComparisonResult) -> None:
     score = result.score
     status = "PASS" if score >= _PASS_THRESHOLD else "FAIL"
+
+    # Device identity line — show hostname (mgmt-ip) when both are available,
+    # otherwise fall back to whichever value is present.
+    if result.device_hostname and result.device_mgmt_ip:
+        device_line = f"`{result.device_hostname}` ({result.device_mgmt_ip})"
+    elif result.device_hostname:
+        device_line = f"`{result.device_hostname}`"
+    elif result.device_mgmt_ip:
+        device_line = result.device_mgmt_ip
+    else:
+        device_line = "*(unknown)*"
+
     lines += [
         "# WAF Policy Compliance Audit Report",
+        "",
+        f"**Source Device:** {device_line}",
         "",
         f"## Policy: `{result.policy_path}`",
         "",
@@ -514,6 +528,19 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
     else:
         vs_html = "<tr><td>Virtual Server Bindings</td><td><em>None found</em></td></tr>"
 
+    # Device identity cell
+    if result.device_hostname and result.device_mgmt_ip:
+        device_cell = (
+            f"<strong>{_e(result.device_hostname)}</strong>"
+            f"&nbsp;<span style='color:#555;font-size:.9em'>({_e(result.device_mgmt_ip)})</span>"
+        )
+    elif result.device_hostname:
+        device_cell = f"<strong>{_e(result.device_hostname)}</strong>"
+    elif result.device_mgmt_ip:
+        device_cell = _e(result.device_mgmt_ip)
+    else:
+        device_cell = "<em>unknown</em>"
+
     parts = [
         "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>",
         f"<title>WAF Audit: {_e(result.policy_path)}</title>",
@@ -522,6 +549,7 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         f"<h1>WAF Policy Compliance Audit Report</h1>",
         "<div class='meta'>",
         "<table>",
+        f"<tr><td>Source Device</td><td>{device_cell}</td></tr>",
         f"<tr><td>Policy</td><td><code>{_e(result.policy_path)}</code></td></tr>",
         f"<tr><td>Partition</td><td>{_e(result.partition)}</td></tr>",
         f"<tr><td>Enforcement Mode</td><td>{_e(result.enforcement_mode)}</td></tr>",
@@ -963,9 +991,25 @@ def generate_summary_reports(
 
 
 def _write_summary_md(results: List[ComparisonResult], reports_dir: Path) -> None:
+    # All results come from the same device — use the first one
+    dev_hostname = results[0].device_hostname if results else ""
+    dev_mgmt_ip  = results[0].device_mgmt_ip  if results else ""
+    if dev_hostname and dev_mgmt_ip:
+        device_line = f"**Source Device:** `{dev_hostname}` ({dev_mgmt_ip})"
+    elif dev_hostname:
+        device_line = f"**Source Device:** `{dev_hostname}`"
+    elif dev_mgmt_ip:
+        device_line = f"**Source Device:** {dev_mgmt_ip}"
+    else:
+        device_line = ""
+
     lines = [
         "# WAF Policy Audit — Summary Report",
         "",
+    ]
+    if device_line:
+        lines += [device_line, ""]
+    lines += [
         "Policies sorted by compliance score (lowest first).",
         "",
         "| Policy | Partition | Enforcement | Virtual Servers | Score | Status | Critical | Warning | Info |",
@@ -1030,12 +1074,34 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
             f"</tr>"
         )
 
+    dev_hostname = results[0].device_hostname if results else ""
+    dev_mgmt_ip  = results[0].device_mgmt_ip  if results else ""
+    if dev_hostname and dev_mgmt_ip:
+        device_html = (
+            f"<p style='margin:0 0 12px'><strong>Source Device:</strong> "
+            f"<strong>{_e(dev_hostname)}</strong>"
+            f"&nbsp;<span style='color:#555'>({_e(dev_mgmt_ip)})</span></p>"
+        )
+    elif dev_hostname:
+        device_html = (
+            f"<p style='margin:0 0 12px'><strong>Source Device:</strong> "
+            f"<strong>{_e(dev_hostname)}</strong></p>"
+        )
+    elif dev_mgmt_ip:
+        device_html = (
+            f"<p style='margin:0 0 12px'><strong>Source Device:</strong> "
+            f"{_e(dev_mgmt_ip)}</p>"
+        )
+    else:
+        device_html = ""
+
     content = (
         "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
         "<title>WAF Audit Summary</title>"
         + _CSS +
         "</head><body>"
         "<h1>WAF Policy Audit — Summary Report</h1>"
+        + device_html +
         "<p>Policies sorted by compliance score (lowest first).</p>"
         "<table class='summary-table findings'>"
         "<thead><tr>"

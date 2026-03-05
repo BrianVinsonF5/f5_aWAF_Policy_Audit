@@ -103,16 +103,17 @@ class PolicyExporter:
     Discovers all ASM/AWAF policies across partitions and exports them.
     """
 
-    _PARTITION_EP = "/mgmt/tm/auth/partition"
-    _POLICY_EP    = (
+    _PARTITION_EP    = "/mgmt/tm/auth/partition"
+    _POLICY_EP       = (
         "/mgmt/tm/asm/policies"
         "?$select=id,name,fullPath,active,enforcementMode,type,"
         "versionDatetime,hasParent,protocolIndependent"
     )
-    _EXPORT_TASK_EP   = "/mgmt/tm/asm/tasks/export-policy"
+    _EXPORT_TASK_EP  = "/mgmt/tm/asm/tasks/export-policy"
     _DOWNLOAD_BASE_EP = "/mgmt/tm/asm/file-transfer/downloads"
-    _VIRTUAL_EP       = "/mgmt/tm/ltm/virtual"
-    _LTM_POLICY_EP    = "/mgmt/tm/ltm/policy"
+    _VIRTUAL_EP      = "/mgmt/tm/ltm/virtual"
+    _LTM_POLICY_EP   = "/mgmt/tm/ltm/policy"
+    _SYS_GLOBAL_EP   = "/mgmt/tm/sys/global-settings"
 
     def __init__(
         self,
@@ -128,6 +129,37 @@ class PolicyExporter:
         self.concurrent = concurrent_exports
         self.filter_partitions = [p.strip() for p in partitions] if partitions else []
         self.log = get_logger("policy_exporter")
+
+    # ── Device information ──────────────────────────────────────────────────────
+
+    def fetch_device_info(self) -> Dict:
+        """
+        Return basic identity information about the BIG-IP device.
+
+        Queries ``/mgmt/tm/sys/global-settings`` for the configured hostname
+        (the FQDN the administrator gave the device).  The management address
+        is the ``host`` value already used to open the HTTPS connection —
+        it may be an IP address or a DNS name depending on how the tool was
+        invoked.
+
+        Returns a dict with keys:
+          hostname   — BIG-IP system hostname (from global-settings), or ""
+          mgmt_ip    — the host/IP used to connect (from the client base URL)
+
+        Failures are non-fatal: the hostname will be an empty string and the
+        mgmt_ip will still be populated from the connection target.
+        """
+        mgmt_ip = self.client.base_url.removeprefix("https://")
+        hostname = ""
+        try:
+            data = self.client.get(
+                self._SYS_GLOBAL_EP,
+                params={"$select": "hostname"},
+            )
+            hostname = data.get("hostname", "")
+        except Exception as exc:
+            self.log.debug("Could not fetch device hostname: %s", exc)
+        return {"hostname": hostname, "mgmt_ip": mgmt_ip}
 
     # ── Discovery ──────────────────────────────────────────────────────────────
 

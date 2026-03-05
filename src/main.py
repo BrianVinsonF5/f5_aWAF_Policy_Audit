@@ -246,7 +246,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     logger.info("Authenticated successfully.")
 
-    # ── Discover partitions & policies ────────────────────────────────────────
+    # ── Fetch device identity ─────────────────────────────────────────────────
     exporter = PolicyExporter(
         client=client,
         output_dir=output_dir,
@@ -254,6 +254,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         concurrent_exports=concurrent,
         partitions=partitions if partitions else None,
     )
+    device_info = exporter.fetch_device_info()
+    device_hostname = device_info["hostname"]
+    device_mgmt_ip  = device_info["mgmt_ip"]
+    logger.info(
+        "Device: hostname=%s  mgmt=%s",
+        device_hostname or "(unknown)", device_mgmt_ip,
+    )
+
+    # ── Discover partitions & policies ────────────────────────────────────────
     try:
         all_partitions = exporter.discover_partitions()
     except Exception as exc:
@@ -338,6 +347,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             policy_meta=meta,
             baseline_name=baseline_name,
             virtual_servers=policy.get("virtual_servers", []),
+            device_hostname=device_hostname,
+            device_mgmt_ip=device_mgmt_ip,
         )
         all_results.append(cmp_result)
 
@@ -354,6 +365,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("\n" + "=" * 72)
     print(f"{'POLICY AUDIT SUMMARY':^72}")
     print("=" * 72)
+    if device_hostname:
+        print(f"Device : {device_hostname}  ({device_mgmt_ip})")
+    else:
+        print(f"Device : {device_mgmt_ip}")
+    print("-" * 72)
     header = f"{'Policy':<40} {'Score':>7}  {'Status':<6}  {'Critical':>8}  {'Warn':>5}"
     print(header)
     print("-" * 72)
