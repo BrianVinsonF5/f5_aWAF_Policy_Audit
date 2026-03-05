@@ -101,7 +101,7 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
         device_line = "*(unknown)*"
 
     lines += [
-        "# WAF Policy Compliance Audit Report",
+        f"# WAF Policy Compliance Report for `{result.policy_path}` on {device_line}",
         "",
         f"**Source Device:** {device_line}",
         "",
@@ -551,7 +551,7 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         f"<title>WAF Audit: {_e(result.policy_path)}</title>",
         _CSS,
         "</head><body>",
-        f"<h1>WAF Policy Compliance Audit Report</h1>",
+        f"<h1>WAF Policy Compliance Report for {_e(result.policy_path)} on {device_cell}</h1>",
         "<div class='meta'>",
         "<table>",
         f"<tr><td>Source Device</td><td>{device_cell}</td></tr>",
