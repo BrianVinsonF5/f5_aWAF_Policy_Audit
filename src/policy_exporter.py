@@ -45,6 +45,55 @@ def _parse_destination(destination: str) -> Tuple[str, str]:
     return raw, ""
 
 
+def _extract_host_conditions(rule: Dict) -> List[str]:
+    """
+    Extract host-name values from an LTM policy rule's conditions.
+
+    F5 BIG-IP uses several condition types to match the HTTP Host header:
+      - httpHeader with name == "host"  (most common, all versions)
+      - httpUri   with host == true     (URI component matching)
+      - httpHost                        (dedicated type in newer BIG-IP versions)
+
+    Returns a deduplicated, ordered list of host strings.
+    """
+    hosts: List[str] = []
+    for cond in rule.get("conditionsReference", {}).get("items", []):
+        ctype = cond.get("type", "").lower()
+        if ctype == "httpheader" and cond.get("name", "").lower() == "host":
+            hosts.extend(cond.get("values", []))
+        elif ctype == "httpuri" and cond.get("host"):
+            hosts.extend(cond.get("values", []))
+        elif ctype == "httphost":
+            hosts.extend(cond.get("values", []))
+    # Deduplicate while preserving order
+    seen: set = set()
+    unique: List[str] = []
+    for h in hosts:
+        if h not in seen:
+            seen.add(h)
+            unique.append(h)
+    return unique
+
+
+def _extract_waf_policy_action(rule: Dict) -> str:
+    """
+    Extract the WAF/ASM security policy path from an LTM policy rule's actions.
+
+    F5 uses two action types for WAF association:
+      - type "asm"  with a "policy" field        (BIG-IP 12.1+)
+      - type "wam"  with a "wamPolicy" / "policy" field  (older versions)
+
+    Returns the full path of the ASM policy (e.g. "/Common/my_waf") or "".
+    """
+    for action in rule.get("actionsReference", {}).get("items", []):
+        atype = action.get("type", "").lower()
+        if atype == "asm" and action.get("enable"):
+            return action.get("policy", "")
+        if atype == "wam" and action.get("enable"):
+            return action.get("wamPolicy", "") or action.get("policy", "")
+    return ""
+
+
 class ExportError(Exception):
     pass
 
@@ -63,6 +112,7 @@ class PolicyExporter:
     _EXPORT_TASK_EP   = "/mgmt/tm/asm/tasks/export-policy"
     _DOWNLOAD_BASE_EP = "/mgmt/tm/asm/file-transfer/downloads"
     _VIRTUAL_EP       = "/mgmt/tm/ltm/virtual"
+    _LTM_POLICY_EP    = "/mgmt/tm/ltm/policy"
 
     def __init__(
         self,
@@ -246,12 +296,11 @@ class PolicyExporter:
     def _get_vs_destination(self, vs_full_path: str) -> Optional[Dict]:
         """
         GET a single LTM virtual server and return its name, fullPath,
-        destination, ip, and port.
+        destination, ip, port, and any attached Local Traffic Policies.
 
         The path is tilde-encoded for the REST URL:
           /Common/my_vs  →  /mgmt/tm/ltm/virtual/~Common~my_vs
         """
-        # Build the tilde-encoded URL segment
         encoded = vs_full_path.strip("/").replace("/", "~")
         api_path = f"{self._VIRTUAL_EP}/~{encoded}"
 
@@ -273,7 +322,79 @@ class PolicyExporter:
             "destination": destination,
             "ip":          ip,
             "port":        port,
+            "ltm_policies": self._get_vs_ltm_policies(api_path),
         }
+
+    def _get_vs_ltm_policies(self, vs_api_path: str) -> List[Dict]:
+        """
+        Return the Local Traffic Policies attached to a virtual server.
+
+        Calls GET {vs_api_path}/policies, then for each attached LTM policy
+        fetches the full rule/condition/action tree so we can surface
+        host-header → WAF-policy mappings.
+
+        Returns a list of dicts, each with:
+          name, fullPath, rules
+        where each rule has:
+          name, host_conditions (list of str), waf_policy (str or "")
+        """
+        try:
+            data = self.client.get(f"{vs_api_path}/policies")
+        except Exception as exc:
+            self.log.debug("Could not fetch LTM policies for VS %s: %s", vs_api_path, exc)
+            return []
+
+        results = []
+        for item in data.get("items", []):
+            name = item.get("name", "")
+            partition = item.get("partition", "Common")
+            full_path = item.get("fullPath", f"/{partition}/{name}")
+            rules = self._get_ltm_policy_rules(full_path)
+            results.append({
+                "name":     name,
+                "fullPath": full_path,
+                "rules":    rules,
+            })
+
+        return results
+
+    def _get_ltm_policy_rules(self, policy_full_path: str) -> List[Dict]:
+        """
+        Fetch an LTM (Local Traffic Policy) with its rules, conditions, and
+        actions expanded in a single API call.
+
+        Parses each rule to extract:
+          - host_conditions: host names matched by httpHeader/httpUri/httpHost
+            conditions (the "selector" for which web application this rule applies to)
+          - waf_policy: the ASM/WAF security policy path applied by the rule's
+            action (empty string if no ASM action is present)
+
+        Only rules that have at least one host condition or a WAF policy action
+        are included in the returned list.
+
+        Returns a list of dicts: {name, host_conditions, waf_policy}
+        """
+        encoded  = policy_full_path.strip("/").replace("/", "~")
+        api_path = f"{self._LTM_POLICY_EP}/~{encoded}"
+
+        try:
+            data = self.client.get(api_path, params={"expandSubcollections": "true"})
+        except Exception as exc:
+            self.log.debug("Could not fetch LTM policy %s: %s", policy_full_path, exc)
+            return []
+
+        rules = []
+        for rule in data.get("rulesReference", {}).get("items", []):
+            host_conditions = _extract_host_conditions(rule)
+            waf_policy      = _extract_waf_policy_action(rule)
+            if host_conditions or waf_policy:
+                rules.append({
+                    "name":            rule.get("name", ""),
+                    "host_conditions": host_conditions,
+                    "waf_policy":      waf_policy,
+                })
+
+        return rules
 
     # ── Export workflow ────────────────────────────────────────────────────────
 
