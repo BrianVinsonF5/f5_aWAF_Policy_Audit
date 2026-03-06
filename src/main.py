@@ -2,10 +2,15 @@
 CLI entry point for the F5 BIG-IP ASM/AWAF Security Policy Auditor.
 
 Usage:
-    python -m src.main --host 192.168.1.245 --username admin --baseline ./baseline/corp.xml
+    # Audit WAF (ASM/AWAF) policies (default):
+    python -m src.main --WAF --host 192.168.1.245 --username admin --baseline ./baseline/corp.xml
+
+    # Audit Bot Defense profiles:
+    python -m src.main --BOT --host 192.168.1.245 --username admin --baseline ./baseline/bot.json
 """
 import argparse
 import getpass
+import json
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -19,6 +24,8 @@ from .bigip_client import BigIPClient, AuthenticationError
 from .policy_exporter import PolicyExporter, ExportError
 from .policy_parser import parse_policy, get_policy_metadata
 from .policy_comparator import compare_policies
+from .bot_defense_auditor import BotDefenseAuditor
+from .bot_defense_comparator import compare_bot_profiles
 from .report_generator import generate_html, generate_markdown, generate_summary_reports
 
 try:
@@ -60,11 +67,26 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="f5-awaf-auditor",
         description=(
-            "F5 BIG-IP ASM/AWAF Security Policy Auditor — "
-            "Read-only compliance audit of WAF policies against a baseline."
+            "F5 BIG-IP Security Auditor — Read-only compliance audit of WAF policies "
+            "or Bot Defense profiles against a baseline.\n\n"
+            "Audit modes (mutually exclusive):\n"
+            "  --WAF   Audit ASM/AWAF security policies against an XML baseline (default)\n"
+            "  --BOT   Audit Bot Defense profiles against a JSON baseline"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+
+    # Audit mode selection
+    mode_group = p.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--WAF", dest="audit_mode", action="store_const", const="waf",
+        help="Audit ASM/AWAF security policies (default mode)",
+    )
+    mode_group.add_argument(
+        "--BOT", dest="audit_mode", action="store_const", const="bot",
+        help="Audit Bot Defense profiles against a JSON baseline",
+    )
+
     p.add_argument("--config", metavar="FILE",
                    help="Path to YAML config file (default: config.yaml)")
     p.add_argument("--host", metavar="HOST",
@@ -75,7 +97,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # BIGIP_PASS environment variable or the interactive prompt to avoid
     # exposing the password in the process table (ps aux).
     p.add_argument("--baseline", metavar="FILE",
-                   help="Path to baseline XML policy file")
+                   help=(
+                       "Path to baseline file. "
+                       "XML for --WAF mode; JSON for --BOT mode."
+                   ))
     p.add_argument("--output-dir", metavar="DIR", default=None,
                    help="Output directory for exports and reports (default: ./output)")
     p.add_argument("--format", dest="report_format",
@@ -111,11 +136,32 @@ def _validate_xml(path: str) -> None:
         sys.exit(f"ERROR: Baseline policy '{path}' is not valid XML: {exc}")
 
 
+def _load_json_baseline(path: str) -> Optional[dict]:
+    """
+    Load and return a JSON baseline file.
+
+    Returns the parsed dict on success, or None (with an error printed to
+    stderr) if the file cannot be read or is not valid JSON.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except json.JSONDecodeError as exc:
+        print(f"ERROR: Baseline file '{path}' is not valid JSON: {exc}", file=sys.stderr)
+        return None
+    except OSError as exc:
+        print(f"ERROR: Cannot read baseline file '{path}': {exc}", file=sys.stderr)
+        return None
+
+
 # ── Main workflow ──────────────────────────────────────────────────────────────
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    # Audit mode: waf (default) or bot
+    audit_mode: str = args.audit_mode or "waf"
 
     # Load config file
     config_path = args.config or "config.yaml"
@@ -184,6 +230,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"\nERROR: Missing required arguments: {', '.join(missing)}")
         return 1
 
+    logger.info("Audit mode: %s", audit_mode.upper())
+
     # Validate concurrent_exports range
     try:
         concurrent = int(concurrent)
@@ -205,10 +253,18 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Validate baseline
     baseline = str(Path(baseline).resolve())
     if not Path(baseline).exists():
-        logger.error("Baseline policy file not found: %s", baseline)
+        logger.error("Baseline file not found: %s", baseline)
         return 1
-    logger.info("Validating baseline XML …")
-    _validate_xml(baseline)
+
+    if audit_mode == "bot":
+        logger.info("Validating baseline JSON …")
+        baseline_data = _load_json_baseline(baseline)
+        if baseline_data is None:
+            return 1
+        baseline_name = Path(baseline).name
+    else:
+        logger.info("Validating baseline XML …")
+        _validate_xml(baseline)
 
     # SSL warning — loud enough to be noticed when the user opts out of verification
     if not verify_ssl:
@@ -262,7 +318,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         device_hostname or "(unknown)", device_mgmt_ip,
     )
 
-    # ── Discover partitions & policies ────────────────────────────────────────
+    # ── Discover partitions ───────────────────────────────────────────────────
     try:
         all_partitions = exporter.discover_partitions()
     except Exception as exc:
@@ -270,6 +326,41 @@ def main(argv: Optional[List[str]] = None) -> int:
         client.close()
         return 1
 
+    # ── Branch: WAF audit vs Bot Defense audit ────────────────────────────────
+    if audit_mode == "bot":
+        return _run_bot_audit(
+            client=client,
+            all_partitions=all_partitions,
+            baseline_data=baseline_data,
+            baseline_name=baseline_name,
+            output_dir=output_dir,
+            formats=formats,
+            partitions=partitions,
+            device_hostname=device_hostname,
+            device_mgmt_ip=device_mgmt_ip,
+            logger=logger,
+        )
+    else:
+        return _run_waf_audit(
+            client=client,
+            exporter=exporter,
+            all_partitions=all_partitions,
+            baseline=baseline,
+            output_dir=output_dir,
+            formats=formats,
+            device_hostname=device_hostname,
+            device_mgmt_ip=device_mgmt_ip,
+            logger=logger,
+        )
+
+
+# ── WAF audit workflow ─────────────────────────────────────────────────────────
+
+def _run_waf_audit(
+    client, exporter, all_partitions, baseline, output_dir, formats,
+    device_hostname, device_mgmt_ip, logger,
+) -> int:
+    """Run the existing ASM/AWAF policy audit."""
     try:
         policies = exporter.discover_policies(all_partitions)
     except ExportError as exc:
@@ -284,10 +375,10 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     exporter.print_discovery_table(policies)
 
-    # ── Enrich with virtual server bindings ───────────────────────────────────
+    # Enrich with virtual server bindings
     exporter.enrich_with_virtual_servers(policies)
 
-    # ── Export policies ───────────────────────────────────────────────────────
+    # Export policies
     successes, failures = exporter.export_all(policies)
     if failures:
         logger.warning(
@@ -303,7 +394,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     client.close()
 
-    # ── Parse baseline ────────────────────────────────────────────────────────
+    # Parse baseline
     logger.info("Parsing baseline policy: %s", baseline)
     try:
         baseline_data = parse_policy(baseline)
@@ -312,7 +403,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     baseline_name = Path(baseline).name
 
-    # ── Compare and report ────────────────────────────────────────────────────
+    # Compare and report
     all_results = []
     total = len(successes)
     iterable = (
@@ -331,7 +422,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             target_data = parse_policy(local_path)
             meta = get_policy_metadata(local_path)
-            # Supplement metadata from discovery if parser couldn't get it
             if not meta.get("name"):
                 meta["name"] = policy["name"]
             if not meta.get("fullPath"):
@@ -357,20 +447,136 @@ def main(argv: Optional[List[str]] = None) -> int:
         if "html" in formats:
             generate_html(cmp_result, output_dir)
 
-    # ── Summary report ────────────────────────────────────────────────────────
     if all_results:
         generate_summary_reports(all_results, output_dir, formats)
 
-    # ── Final stdout summary ──────────────────────────────────────────────────
+    return _print_summary(
+        all_results=all_results,
+        failures=failures,
+        device_hostname=device_hostname,
+        device_mgmt_ip=device_mgmt_ip,
+        output_dir=output_dir,
+        subject_label="Policy",
+        failure_label="policy export(s)",
+    )
+
+
+# ── Bot Defense audit workflow ─────────────────────────────────────────────────
+
+def _run_bot_audit(
+    client, all_partitions, baseline_data, baseline_name, output_dir, formats,
+    partitions, device_hostname, device_mgmt_ip, logger,
+) -> int:
+    """Run the Bot Defense profile audit."""
+    auditor = BotDefenseAuditor(
+        client=client,
+        output_dir=output_dir,
+        partitions=partitions if partitions else None,
+    )
+
+    try:
+        profiles = auditor.discover_profiles(all_partitions)
+    except RuntimeError as exc:
+        logger.error("Bot Defense profile discovery failed: %s", exc)
+        client.close()
+        return 1
+
+    if not profiles:
+        logger.warning("No Bot Defense profiles found. Exiting.")
+        client.close()
+        return 0
+
+    auditor.print_discovery_table(profiles)
+
+    successes, failures = auditor.fetch_all(profiles)
+    if failures:
+        logger.warning(
+            "%d Bot Defense profile fetch(es) failed:", len(failures)
+        )
+        for profile, err in failures:
+            logger.warning("  %s: %s", profile["fullPath"], err)
+
+    if not successes:
+        logger.error("All profile fetches failed. No profiles to audit.")
+        client.close()
+        return 1
+
+    client.close()
+
+    # Compare and report
+    all_results = []
+    total = len(successes)
+    iterable = (
+        tqdm(successes, desc="Auditing Bot Defense profiles", unit="profile")
+        if _HAS_TQDM
+        else successes
+    )
+
+    for idx, (profile_meta, profile_data) in enumerate(iterable, 1):
+        logger.info(
+            "Auditing Bot Defense profile %d/%d: %s",
+            idx, total, profile_meta["fullPath"],
+        )
+        try:
+            cmp_result = compare_bot_profiles(
+                baseline=baseline_data,
+                target=profile_data,
+                profile_meta=profile_meta,
+                baseline_name=baseline_name,
+                device_hostname=device_hostname,
+                device_mgmt_ip=device_mgmt_ip,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to compare Bot Defense profile %s: %s",
+                profile_meta["fullPath"], exc,
+            )
+            continue
+
+        all_results.append(cmp_result)
+
+        if "markdown" in formats:
+            generate_markdown(cmp_result, output_dir)
+        if "html" in formats:
+            generate_html(cmp_result, output_dir)
+
+    if all_results:
+        generate_summary_reports(all_results, output_dir, formats)
+
+    return _print_summary(
+        all_results=all_results,
+        failures=failures,
+        device_hostname=device_hostname,
+        device_mgmt_ip=device_mgmt_ip,
+        output_dir=output_dir,
+        subject_label="Profile",
+        failure_label="profile fetch(es)",
+    )
+
+
+# ── Shared summary output ──────────────────────────────────────────────────────
+
+def _print_summary(
+    all_results, failures, device_hostname, device_mgmt_ip, output_dir,
+    subject_label="Policy", failure_label="policy export(s)",
+) -> int:
+    """Print the final stdout summary table and return the exit code."""
+    audit_label = (
+        "BOT DEFENSE PROFILE AUDIT SUMMARY"
+        if any(getattr(r, "profile_type", "waf") == "bot" for r in all_results)
+        else "POLICY AUDIT SUMMARY"
+    )
     print("\n" + "=" * 72)
-    print(f"{'POLICY AUDIT SUMMARY':^72}")
+    print(f"{audit_label:^72}")
     print("=" * 72)
     if device_hostname:
         print(f"Device : {device_hostname}  ({device_mgmt_ip})")
     else:
         print(f"Device : {device_mgmt_ip}")
     print("-" * 72)
-    header = f"{'Policy':<40} {'Score':>7}  {'Status':<6}  {'Critical':>8}  {'Warn':>5}"
+    header = (
+        f"{subject_label:<40} {'Score':>7}  {'Status':<6}  {'Critical':>8}  {'Warn':>5}"
+    )
     print(header)
     print("-" * 72)
 
@@ -382,7 +588,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         totals = r.summary.get("totals", {})
         crit = totals.get("critical", 0)
         warn = totals.get("warning", 0)
-        # Truncate long names
         name = r.policy_path
         if len(name) > 38:
             name = "…" + name[-37:]
@@ -391,7 +596,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("=" * 72)
 
     if failures:
-        print(f"\nWARNING: {len(failures)} policy export(s) failed and were not audited.")
+        print(f"\nWARNING: {len(failures)} {failure_label} failed and were not audited.")
 
     reports_dir = Path(output_dir) / "reports"
     print(f"\nReports written to: {reports_dir}")
@@ -399,9 +604,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     exit_code = 1 if any_fail else 0
     if any_fail:
-        print(f"\nRESULT: FAIL — one or more policies scored below {_PASS_THRESHOLD:.0f}%")
+        print(f"\nRESULT: FAIL — one or more {failure_label.split('(')[0].strip()}s scored below {_PASS_THRESHOLD:.0f}%")
     else:
-        print(f"\nRESULT: PASS — all policies scored >= {_PASS_THRESHOLD:.0f}%")
+        print(f"\nRESULT: PASS — all {failure_label.split('(')[0].strip()}s scored >= {_PASS_THRESHOLD:.0f}%")
 
     return exit_code
 

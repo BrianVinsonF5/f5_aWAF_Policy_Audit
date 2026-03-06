@@ -70,15 +70,18 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
     reports_dir = ensure_dir(Path(output_dir) / "reports")
     safe_name = result.policy_name.replace('/', '_').replace(' ', '_')
     out_path = reports_dir / f"{safe_name}_audit_report.md"
+    is_bot = getattr(result, "profile_type", "waf") == "bot"
 
     lines: List[str] = []
     _md_header(lines, result)
-    _md_signature_sets_table(lines, result)
-    _md_policy_builder_status(lines, result)
-    _md_violations_table(lines, result)
+    if not is_bot:
+        _md_signature_sets_table(lines, result)
+        _md_policy_builder_status(lines, result)
+        _md_violations_table(lines, result)
     _md_summary_table(lines, result)
     _md_findings(lines, result)
-    _md_blocking_comparison(lines, result)
+    if not is_bot:
+        _md_blocking_comparison(lines, result)
     _md_extra_missing(lines, result)
 
     out_path.write_text('\n'.join(lines), encoding='utf-8')
@@ -89,6 +92,7 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
 def _md_header(lines: List[str], result: ComparisonResult) -> None:
     score = result.score
     status = "PASS" if score >= _PASS_THRESHOLD else "FAIL"
+    is_bot = getattr(result, "profile_type", "waf") == "bot"
 
     # Device identity line — show hostname (mgmt-ip) when both are available,
     # otherwise fall back to whichever value is present.
@@ -101,16 +105,20 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
     else:
         device_line = "*(unknown)*"
 
+    report_kind = "Bot Defense Profile" if is_bot else "WAF Policy"
+    subject_label = "Profile" if is_bot else "Policy"
+    baseline_label = "Baseline Profile" if is_bot else "Baseline Policy"
+
     lines += [
-        f"# WAF Policy Compliance Report for `{result.policy_path}` on {device_line}",
+        f"# {report_kind} Compliance Report for `{result.policy_path}` on {device_line}",
         "",
         f"**Source Device:** {device_line}",
         "",
-        f"## Policy: `{result.policy_path}`",
+        f"## {subject_label}: `{result.policy_path}`",
         "",
         f"- **Partition:** {result.partition}",
         f"- **Enforcement Mode:** {result.enforcement_mode}",
-        f"- **Baseline Policy:** {result.baseline_name}",
+        f"- **{baseline_label}:** {result.baseline_name}",
         f"- **Audit Date:** {result.timestamp}",
         f"- **Compliance Score:** {score:.1f}% — **{status}** (threshold: {_PASS_THRESHOLD:.0f}%)",
         "",
@@ -530,6 +538,7 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
     reports_dir = ensure_dir(Path(output_dir) / "reports")
     safe_name = result.policy_name.replace('/', '_').replace(' ', '_')
     out_path = reports_dir / f"{safe_name}_audit_report.html"
+    is_bot = getattr(result, "profile_type", "waf") == "bot"
 
     score = result.score
     pass_fail = "PASS" if score >= _PASS_THRESHOLD else "FAIL"
@@ -587,20 +596,28 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
     else:
         device_cell = "<em>unknown</em>"
 
+    report_kind = "Bot Defense Profile" if is_bot else "WAF Policy"
+    subject_label = "Profile" if is_bot else "Policy"
+    baseline_label = "Baseline Profile" if is_bot else "Baseline Policy"
+    page_title = f"{'Bot Defense' if is_bot else 'WAF'} Audit: {_e(result.policy_path)}"
+
     parts = [
         "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>",
-        f"<title>WAF Audit: {_e(result.policy_path)}</title>",
+        f"<title>{page_title}</title>",
         _CSS,
         "</head><body>",
-        f"<h1>WAF Policy Compliance Report for {_e(result.policy_path)} on {device_cell}</h1>",
+        f"<h1>{report_kind} Compliance Report for {_e(result.policy_path)} on {device_cell}</h1>",
         "<div class='meta'>",
         "<table>",
         f"<tr><td>Source Device</td><td>{device_cell}</td></tr>",
-        f"<tr><td>Policy</td><td><code>{_e(result.policy_path)}</code></td></tr>",
+        f"<tr><td>{subject_label}</td><td><code>{_e(result.policy_path)}</code></td></tr>",
         f"<tr><td>Partition</td><td>{_e(result.partition)}</td></tr>",
         f"<tr><td>Enforcement Mode</td><td>{_e(result.enforcement_mode)}</td></tr>",
-        vs_html,
-        f"<tr><td>Baseline Policy</td><td>{_e(result.baseline_name)}</td></tr>",
+    ]
+    if not is_bot:
+        parts.append(vs_html)
+    parts += [
+        f"<tr><td>{baseline_label}</td><td>{_e(result.baseline_name)}</td></tr>",
         f"<tr><td>Audit Date</td><td>{_e(result.timestamp)}</td></tr>",
         f"<tr><td>Compliance Score</td><td><strong>{score:.1f}%</strong> {badge_pf}</td></tr>",
         "</table>",
@@ -608,26 +625,27 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         "</div>",
     ]
 
-    # LTM policy rule detail (collapsible, after the meta block)
-    ltm_section = _html_ltm_policy_section(vs_list)
-    if ltm_section:
-        parts.append(ltm_section)
+    if not is_bot:
+        # LTM policy rule detail (collapsible, after the meta block)
+        ltm_section = _html_ltm_policy_section(vs_list)
+        if ltm_section:
+            parts.append(ltm_section)
 
-    # Policy Builder status banner + settings table
-    parts.append(_html_policy_builder_status(result))
+        # Policy Builder status banner + settings table
+        parts.append(_html_policy_builder_status(result))
 
-    # Attack Signature Sets inventory — always shown, after Policy Builder
-    parts.append(_html_signature_sets_table(result))
+        # Attack Signature Sets inventory — always shown, after Policy Builder
+        parts.append(_html_signature_sets_table(result))
 
-    # WAF Violations Status — collapsible, directly after Policy Builder
-    if result.violations:
-        parts.append(
-            "<details><summary><h2 style='display:inline;font-size:1em'>"
-            f"WAF Violations Status ({len(result.violations)})</h2></summary>"
-            "<div class='details-body'>"
-        )
-        parts.append(_html_violations_table(result.violations, result.baseline_violations))
-        parts.append("</div></details>")
+        # WAF Violations Status — collapsible, directly after Policy Builder
+        if result.violations:
+            parts.append(
+                "<details><summary><h2 style='display:inline;font-size:1em'>"
+                f"WAF Violations Status ({len(result.violations)})</h2></summary>"
+                "<div class='details-body'>"
+            )
+            parts.append(_html_violations_table(result.violations, result.baseline_violations))
+            parts.append("</div></details>")
 
     # Executive summary
     parts.append("<h2>Executive Summary</h2>")
@@ -651,18 +669,19 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         parts.append(_html_findings_table(items))
         parts.append("</div></details>")
 
-    # Blocking violations comparison — collapsible
-    blocking_diffs = [d for d in result.diffs if d.section == "blocking"]
-    if blocking_diffs or result.violations:
-        n = len(blocking_diffs)
-        parts.append(
-            f"<details><summary><h2 style='display:inline;font-size:1em'>"
-            f"Blocking Section — Violations Comparison ({n} diff{'s' if n != 1 else ''})</h2>"
-            f"</summary><div class='details-body'>"
-            f"<p style='margin:8px 0'>Each violation's Alarm / Block / Learn flags compared against the baseline.</p>"
-        )
-        parts.append(_html_blocking_comparison_table(blocking_diffs, result.violations))
-        parts.append("</div></details>")
+    # Blocking violations comparison — collapsible (WAF mode only)
+    if not is_bot:
+        blocking_diffs = [d for d in result.diffs if d.section == "blocking"]
+        if blocking_diffs or result.violations:
+            n = len(blocking_diffs)
+            parts.append(
+                f"<details><summary><h2 style='display:inline;font-size:1em'>"
+                f"Blocking Section — Violations Comparison ({n} diff{'s' if n != 1 else ''})</h2>"
+                f"</summary><div class='details-body'>"
+                f"<p style='margin:8px 0'>Each violation's Alarm / Block / Learn flags compared against the baseline.</p>"
+            )
+            parts.append(_html_blocking_comparison_table(blocking_diffs, result.violations))
+            parts.append("</div></details>")
 
     # Extra / missing
     if result.extra_in_target:
@@ -1108,6 +1127,8 @@ def _write_summary_md(results: List[ComparisonResult], reports_dir: Path) -> Non
     # All results come from the same device — use the first one
     dev_hostname = results[0].device_hostname if results else ""
     dev_mgmt_ip  = results[0].device_mgmt_ip  if results else ""
+    is_bot = any(getattr(r, "profile_type", "waf") == "bot" for r in results)
+
     if dev_hostname and dev_mgmt_ip:
         device_line = f"**Source Device:** `{dev_hostname}` ({dev_mgmt_ip})"
     elif dev_hostname:
@@ -1117,40 +1138,72 @@ def _write_summary_md(results: List[ComparisonResult], reports_dir: Path) -> Non
     else:
         device_line = ""
 
-    lines = [
-        "# WAF Policy Audit — Summary Report",
-        "",
-    ]
+    report_title = (
+        "# Bot Defense Profile Audit — Summary Report"
+        if is_bot else
+        "# WAF Policy Audit — Summary Report"
+    )
+    subject_label = "Profile" if is_bot else "Policy"
+
+    lines = [report_title, ""]
     if device_line:
         lines += [device_line, ""]
-    lines += [
-        "Policies sorted by compliance score (lowest first).",
-        "",
-        "| Policy | Partition | Enforcement | Virtual Servers | Score | Status | Critical | Warning | Info |",
-        "|--------|-----------|-------------|-----------------|-------|--------|----------|---------|------|",
-    ]
-    for r in results:
-        status = "PASS" if r.score >= _PASS_THRESHOLD else "FAIL"
-        totals = r.summary.get("totals", {})
-        if r.virtual_servers:
-            vs_cell = "<br>".join(
-                f"`{vs.get('fullPath', vs.get('name', ''))}` ({vs.get('ip', '?')}:{vs.get('port', '?')}) [{vs.get('association_type', 'direct')}]"
-                for vs in r.virtual_servers
+
+    if is_bot:
+        lines += [
+            f"{subject_label}s sorted by compliance score (lowest first).",
+            "",
+            f"| {subject_label} | Partition | Enforcement | Template | Score | Status | Critical | Warning | Info |",
+            f"|--------|-----------|-------------|----------|-------|--------|----------|---------|------|",
+        ]
+        for r in results:
+            status = "PASS" if r.score >= _PASS_THRESHOLD else "FAIL"
+            totals = r.summary.get("totals", {})
+            template = r.enforcement_mode  # use enforcement_mode field as it's set on result
+            lines.append(
+                f"| `{r.policy_path}` | {r.partition} | {r.enforcement_mode} "
+                f"| — "
+                f"| {r.score:.1f}% | {status} "
+                f"| {totals.get('critical',0)} | {totals.get('warning',0)} | {totals.get('info',0)} |"
             )
-        else:
-            vs_cell = "*(none)*"
-        lines.append(
-            f"| `{r.policy_path}` | {r.partition} | {r.enforcement_mode} "
-            f"| {vs_cell} "
-            f"| {r.score:.1f}% | {status} "
-            f"| {totals.get('critical',0)} | {totals.get('warning',0)} | {totals.get('info',0)} |"
-        )
+    else:
+        lines += [
+            "Policies sorted by compliance score (lowest first).",
+            "",
+            "| Policy | Partition | Enforcement | Virtual Servers | Score | Status | Critical | Warning | Info |",
+            "|--------|-----------|-------------|-----------------|-------|--------|----------|---------|------|",
+        ]
+        for r in results:
+            status = "PASS" if r.score >= _PASS_THRESHOLD else "FAIL"
+            totals = r.summary.get("totals", {})
+            if r.virtual_servers:
+                vs_cell = "<br>".join(
+                    f"`{vs.get('fullPath', vs.get('name', ''))}` ({vs.get('ip', '?')}:{vs.get('port', '?')}) [{vs.get('association_type', 'direct')}]"
+                    for vs in r.virtual_servers
+                )
+            else:
+                vs_cell = "*(none)*"
+            lines.append(
+                f"| `{r.policy_path}` | {r.partition} | {r.enforcement_mode} "
+                f"| {vs_cell} "
+                f"| {r.score:.1f}% | {status} "
+                f"| {totals.get('critical',0)} | {totals.get('warning',0)} | {totals.get('info',0)} |"
+            )
+
     out = reports_dir / "summary_audit_report.md"
     out.write_text('\n'.join(lines), encoding='utf-8')
     _log.info("Summary Markdown: %s", out)
 
 
 def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> None:
+    is_bot = any(getattr(r, "profile_type", "waf") == "bot" for r in results)
+    subject_label = "Profile" if is_bot else "Policy"
+    report_title = (
+        "Bot Defense Profile Audit — Summary Report"
+        if is_bot else
+        "WAF Policy Audit — Summary Report"
+    )
+
     rows = []
     for r in results:
         status = "PASS" if r.score >= _PASS_THRESHOLD else "FAIL"
@@ -1158,26 +1211,29 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
         totals = r.summary.get("totals", {})
         score_class = "score-pass" if r.score >= _PASS_THRESHOLD else "score-fail"
 
-        if r.virtual_servers:
-            vs_items = "".join(
-                f"<div style='white-space:nowrap'>"
-                f"<code>{_e(vs.get('fullPath', vs.get('name', '')))}</code>"
-                f"&nbsp;<span style='color:#555;font-size:.85em'>"
-                f"{_e(vs.get('ip', '?'))}:{_e(vs.get('port', '?'))}"
-                f"&nbsp;[{_e(vs.get('association_type', 'direct'))}]"
-                f"</span></div>"
-                for vs in r.virtual_servers
-            )
-            vs_cell = vs_items
+        if is_bot:
+            extra_cell = ""  # No VS column for bot profiles
         else:
-            vs_cell = "<em style='color:#999'>none</em>"
+            if r.virtual_servers:
+                vs_items = "".join(
+                    f"<div style='white-space:nowrap'>"
+                    f"<code>{_e(vs.get('fullPath', vs.get('name', '')))}</code>"
+                    f"&nbsp;<span style='color:#555;font-size:.85em'>"
+                    f"{_e(vs.get('ip', '?'))}:{_e(vs.get('port', '?'))}"
+                    f"&nbsp;[{_e(vs.get('association_type', 'direct'))}]"
+                    f"</span></div>"
+                    for vs in r.virtual_servers
+                )
+                extra_cell = f"<td>{vs_items}</td>"
+            else:
+                extra_cell = "<td><em style='color:#999'>none</em></td>"
 
         rows.append(
             f"<tr>"
             f"<td><code>{_e(r.policy_path)}</code></td>"
             f"<td>{_e(r.partition)}</td>"
             f"<td>{_e(r.enforcement_mode)}</td>"
-            f"<td>{vs_cell}</td>"
+            + extra_cell +
             f"<td>"
             f"  <div class='score-bar'><div class='{score_class} score-fill' style='width:{min(r.score,100):.1f}%'></div></div>"
             f"  {r.score:.1f}%"
@@ -1210,18 +1266,19 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
     else:
         device_html = ""
 
+    extra_th = "" if is_bot else "<th>Virtual Servers</th>"
     content = (
         "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
-        "<title>WAF Audit Summary</title>"
+        f"<title>{_e(report_title)}</title>"
         + _CSS +
-        "</head><body>"
-        "<h1>WAF Policy Audit — Summary Report</h1>"
+        f"</head><body>"
+        f"<h1>{_e(report_title)}</h1>"
         + device_html +
-        "<p>Policies sorted by compliance score (lowest first).</p>"
+        f"<p>{subject_label}s sorted by compliance score (lowest first).</p>"
         "<table class='summary-table findings'>"
         "<thead><tr>"
-        "<th>Policy</th><th>Partition</th><th>Enforcement</th>"
-        "<th>Virtual Servers</th>"
+        f"<th>{subject_label}</th><th>Partition</th><th>Enforcement</th>"
+        + extra_th +
         "<th>Score</th><th>Status</th><th>Critical</th><th>Warning</th><th>Info</th>"
         "</tr></thead><tbody>"
         + "".join(rows) +
