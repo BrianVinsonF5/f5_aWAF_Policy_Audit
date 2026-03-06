@@ -200,17 +200,39 @@ def _parse_attack_signatures(root) -> List[Dict]:
 
 
 def _parse_signature_sets(root) -> List[Dict]:
+    # Format 1 (iControl REST XML export): <signature-sets><signature-set>...
     sets_el = _find(root, "signature-sets")
-    if sets_el is None:
+    if sets_el is not None:
+        results = []
+        for ss in _findall(sets_el, "signature-set"):
+            results.append({
+                "name":             _text(ss, "name") or ss.get("name", ""),
+                "alarm":            _norm_bool(ss, "alarm"),
+                "block":            _norm_bool(ss, "block"),
+                "learn":            _norm_bool(ss, "learn"),
+                "signatureSetType": _text(ss, "type", "filter-based"),
+            })
+        return results
+
+    # Format 2 (BIG-IP GUI / older XML export): <attack_signatures><signature_set>...
+    # The set name lives in a <set name="..."> child attribute, not a <name> element.
+    atk_el = _find(root, "attack_signatures")
+    if atk_el is None:
         return []
     results = []
-    for ss in _findall(sets_el, "signature-set"):
+    for ss in _findall(atk_el, "signature_set"):
+        set_el = _find(ss, "set")
+        if set_el is None:
+            continue
+        name = set_el.get("name", "") or _text(set_el, "set_name", "")
+        if not name:
+            continue
         results.append({
-            "name":             _text(ss, "name") or ss.get("name", ""),
+            "name":             name,
             "alarm":            _norm_bool(ss, "alarm"),
             "block":            _norm_bool(ss, "block"),
             "learn":            _norm_bool(ss, "learn"),
-            "signatureSetType": _text(ss, "type", "filter-based"),
+            "signatureSetType": "filter-based",
         })
     return results
 
