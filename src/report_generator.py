@@ -616,10 +616,8 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
     # Policy Builder status banner + settings table
     parts.append(_html_policy_builder_status(result))
 
-    # Attack Signature Sets inventory — collapsible, after Policy Builder
-    sig_sets_html = _html_signature_sets_table(result)
-    if sig_sets_html:
-        parts.append(sig_sets_html)
+    # Attack Signature Sets inventory — always shown, after Policy Builder
+    parts.append(_html_signature_sets_table(result))
 
     # WAF Violations Status — collapsible, directly after Policy Builder
     if result.violations:
@@ -718,9 +716,6 @@ def _html_summary_table(result: ComparisonResult) -> str:
 def _html_signature_sets_table(result: ComparisonResult) -> str:
     """Render a collapsible HTML table of all applied Attack Signature Sets."""
     sig_sets = result.target_signature_sets
-    if not sig_sets:
-        return ""
-
     baseline_map = {s["name"]: s for s in result.baseline_signature_sets}
 
     rows = []
@@ -751,22 +746,36 @@ def _html_signature_sets_table(result: ComparisonResult) -> str:
         )
 
     n = len(sig_sets)
-    header = (
-        f"<details open><summary>"
-        f"<h2 style='display:inline;font-size:1em'>Attack Signature Sets ({n})</h2>"
-        f"</summary><div class='details-body'>"
-        f"<p style='margin:8px 0'>Attack Signature Sets applied to this policy "
-        f"and their Learn / Alarm / Block status.</p>"
-        f"<table class='findings'>"
-        f"<thead><tr>"
-        f"<th>Signature Set Name</th><th>Type</th>"
-        f"<th style='text-align:center'>Learn</th>"
-        f"<th style='text-align:center'>Alarm</th>"
-        f"<th style='text-align:center'>Block</th>"
-        f"<th style='text-align:center'>Baseline Match</th>"
-        f"</tr></thead><tbody>"
+    count_label = str(n) if n else "none"
+
+    if not rows:
+        body = (
+            "<p style='margin:8px 0;color:#777'>"
+            "<em>No Attack Signature Sets found in this policy export. "
+            "Verify that the policy XML includes a &lt;signature-sets&gt; section.</em>"
+            "</p>"
+        )
+    else:
+        body = (
+            f"<p style='margin:8px 0'>Attack Signature Sets applied to this policy "
+            f"and their Learn / Alarm / Block status.</p>"
+            f"<table class='findings'>"
+            f"<thead><tr>"
+            f"<th>Signature Set Name</th><th>Type</th>"
+            f"<th style='text-align:center'>Learn</th>"
+            f"<th style='text-align:center'>Alarm</th>"
+            f"<th style='text-align:center'>Block</th>"
+            f"<th style='text-align:center'>Baseline Match</th>"
+            f"</tr></thead><tbody>"
+            + "".join(rows) +
+            "</tbody></table>"
+        )
+
+    return (
+        f"<h2>Attack Signature Sets</h2>"
+        f"<details open><summary>Signature Set Inventory ({count_label})</summary>"
+        f"<div class='details-body'>{body}</div></details>"
     )
-    return header + "".join(rows) + "</tbody></table></div></details>"
 
 
 def _html_ltm_policy_section(vs_list: List[Dict]) -> str:
