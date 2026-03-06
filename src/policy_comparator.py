@@ -61,6 +61,9 @@ class ComparisonResult:
     # Source BIG-IP device identity (hostname from sys/global-settings, mgmt IP from connection)
     device_hostname: str = ""
     device_mgmt_ip:  str = ""
+    # Raw signature set lists for inventory reporting (Learn / Alarm / Block per set)
+    target_signature_sets:   List[Dict] = field(default_factory=list)
+    baseline_signature_sets: List[Dict] = field(default_factory=list)
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -461,6 +464,10 @@ def _cmp_signature_sets(
 ) -> None:
     b_sets = {s["name"]: s for s in baseline.get("signature-sets", [])}
     t_sets = {s["name"]: s for s in target.get("signature-sets", [])}
+
+    # Store raw lists for inventory reporting
+    result.target_signature_sets   = target.get("signature-sets", [])
+    result.baseline_signature_sets = baseline.get("signature-sets", [])
 
     for name, b_set in b_sets.items():
         if name not in t_sets:

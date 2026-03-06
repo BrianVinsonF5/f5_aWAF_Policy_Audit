@@ -73,6 +73,7 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
 
     lines: List[str] = []
     _md_header(lines, result)
+    _md_signature_sets_table(lines, result)
     _md_policy_builder_status(lines, result)
     _md_violations_table(lines, result)
     _md_summary_table(lines, result)
@@ -164,6 +165,46 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
             "*No virtual server bindings found for this policy.*",
             "",
         ]
+
+
+def _md_signature_sets_table(lines: List[str], result: ComparisonResult) -> None:
+    """Render a Markdown table of all Attack Signature Sets applied to this policy."""
+    sig_sets = result.target_signature_sets
+    if not sig_sets:
+        return
+
+    # Build a lookup for baseline values to flag differences
+    baseline_map = {s["name"]: s for s in result.baseline_signature_sets}
+
+    lines += [
+        "## Attack Signature Sets",
+        "",
+        "All Attack Signature Sets applied to this policy and their Learn / Alarm / Block status.",
+        "",
+        "| Signature Set Name | Type | Learn | Alarm | Block | Baseline Match |",
+        "|--------------------|------|:-----:|:-----:|:-----:|:--------------:|",
+    ]
+
+    for ss in sorted(sig_sets, key=lambda s: s.get("name", "")):
+        name  = ss.get("name", "")
+        stype = ss.get("signatureSetType", "filter-based")
+        learn = human_bool(ss.get("learn", False))
+        alarm = human_bool(ss.get("alarm", False))
+        block = human_bool(ss.get("block", False))
+
+        bss = baseline_map.get(name)
+        if bss is None:
+            match_cell = "— N/A"
+        elif any(ss.get(a) != bss.get(a) for a in ("learn", "alarm", "block")):
+            match_cell = "✗ Mismatch"
+        else:
+            match_cell = "✓ Match"
+
+        lines.append(
+            f"| {name} | {stype} | {learn} | {alarm} | {block} | {match_cell} |"
+        )
+
+    lines.append("")
 
 
 def _md_policy_builder_status(lines: List[str], result: ComparisonResult) -> None:
@@ -575,6 +616,11 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
     # Policy Builder status banner + settings table
     parts.append(_html_policy_builder_status(result))
 
+    # Attack Signature Sets inventory — collapsible, after Policy Builder
+    sig_sets_html = _html_signature_sets_table(result)
+    if sig_sets_html:
+        parts.append(sig_sets_html)
+
     # WAF Violations Status — collapsible, directly after Policy Builder
     if result.violations:
         parts.append(
@@ -667,6 +713,60 @@ def _html_summary_table(result: ComparisonResult) -> str:
         "<thead><tr><th>Category</th><th>Critical</th><th>Warning</th><th>Info</th><th>Total</th></tr></thead>"
         "<tbody>" + "".join(rows) + "</tbody></table>"
     )
+
+
+def _html_signature_sets_table(result: ComparisonResult) -> str:
+    """Render a collapsible HTML table of all applied Attack Signature Sets."""
+    sig_sets = result.target_signature_sets
+    if not sig_sets:
+        return ""
+
+    baseline_map = {s["name"]: s for s in result.baseline_signature_sets}
+
+    rows = []
+    for ss in sorted(sig_sets, key=lambda s: s.get("name", "")):
+        name  = _e(ss.get("name", ""))
+        stype = _e(ss.get("signatureSetType", "filter-based"))
+        learn = human_bool(ss.get("learn", False))
+        alarm = human_bool(ss.get("alarm", False))
+        block = human_bool(ss.get("block", False))
+
+        bss = baseline_map.get(ss.get("name", ""))
+        if bss is None:
+            match_td = "<td class='match-na'>— N/A</td>"
+        elif any(ss.get(a) != bss.get(a) for a in ("learn", "alarm", "block")):
+            match_td = "<td class='match-diff'>✗ Mismatch</td>"
+        else:
+            match_td = "<td class='match-ok'>✓ Match</td>"
+
+        rows.append(
+            f"<tr>"
+            f"<td>{name}</td>"
+            f"<td>{stype}</td>"
+            f"<td style='text-align:center'>{_e(learn)}</td>"
+            f"<td style='text-align:center'>{_e(alarm)}</td>"
+            f"<td style='text-align:center'>{_e(block)}</td>"
+            f"{match_td}"
+            f"</tr>"
+        )
+
+    n = len(sig_sets)
+    header = (
+        f"<details open><summary>"
+        f"<h2 style='display:inline;font-size:1em'>Attack Signature Sets ({n})</h2>"
+        f"</summary><div class='details-body'>"
+        f"<p style='margin:8px 0'>Attack Signature Sets applied to this policy "
+        f"and their Learn / Alarm / Block status.</p>"
+        f"<table class='findings'>"
+        f"<thead><tr>"
+        f"<th>Signature Set Name</th><th>Type</th>"
+        f"<th style='text-align:center'>Learn</th>"
+        f"<th style='text-align:center'>Alarm</th>"
+        f"<th style='text-align:center'>Block</th>"
+        f"<th style='text-align:center'>Baseline Match</th>"
+        f"</tr></thead><tbody>"
+    )
+    return header + "".join(rows) + "</tbody></table></div></details>"
 
 
 def _html_ltm_policy_section(vs_list: List[Dict]) -> str:
