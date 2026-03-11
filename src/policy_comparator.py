@@ -66,6 +66,12 @@ class ComparisonResult:
     baseline_signature_sets: List[Dict] = field(default_factory=list)
     # Audit mode: "waf" (ASM/AWAF policy) or "bot" (Bot Defense profile)
     profile_type: str = "waf"
+    # Bot Defense display data — populated by bot_defense_comparator
+    bot_mitigation_target:   Dict = field(default_factory=dict)
+    bot_mitigation_baseline: Dict = field(default_factory=dict)
+    bot_signatures:  List[Dict] = field(default_factory=list)
+    bot_whitelist:   List[Dict] = field(default_factory=list)
+    bot_browsers:    List[Dict] = field(default_factory=list)
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
