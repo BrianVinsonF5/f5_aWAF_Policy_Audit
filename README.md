@@ -1,14 +1,20 @@
 # F5 BIG-IP ASM/AWAF Security Policy Auditor
 
 A Python CLI application that connects to an F5 BIG-IP device via the iControl
-REST API, discovers all ASM/Advanced WAF security policies across every user
-partition, exports each policy in XML format, compares each exported policy
-against a provided baseline XML policy, and generates a detailed
-compliance/drift report for each policy.
+REST API and performs read-only compliance audits in two modes:
+
+- **WAF mode (`--WAF`)** — Discovers all ASM/Advanced WAF security policies
+  across every user partition, exports each policy as XML, compares it against
+  a provided baseline XML policy, and generates a detailed compliance/drift
+  report per policy.
+- **Bot Defense mode (`--BOT`)** — Discovers all Bot Defense profiles across
+  every user partition, fetches each profile via the REST API, compares it
+  against a provided baseline JSON profile, and generates a per-profile
+  compliance report.
 
 > **Read-Only Guarantee** — This tool never creates, modifies, deletes, or
 > applies any configuration on the BIG-IP device. It performs only GET requests
-> (plus the POST to initiate an export task, which is a read operation) and
+> (plus the POST to initiate a WAF export task, which is a read operation) and
 > downloads exported policy files.
 
 ---
@@ -34,6 +40,44 @@ cd f5-awaf-policy-auditor
 # Install Python dependencies
 pip install -r requirements.txt
 ```
+
+---
+
+## Audit Modes
+
+### WAF Mode (`--WAF`)
+
+Audits ASM/Advanced WAF security policies. This is the **default** mode if
+neither `--WAF` nor `--BOT` is specified.
+
+- Discovers all policies across partitions via the iControl REST API
+- Exports each policy as XML using the BIG-IP export task workflow
+- Parses and compares the exported XML against a baseline XML policy
+- Baseline file must be a valid F5 policy XML export
+
+### Bot Defense Mode (`--BOT`)
+
+Audits Bot Defense profiles. Requires the BIG-IP Advanced WAF or Bot Defense
+module to be licensed and provisioned.
+
+- Discovers all Bot Defense profiles via `GET /mgmt/tm/security/bot-defense/profile`
+- Fetches the full profile JSON for each discovered profile
+- Saves each profile JSON to `output/bot-defense/` for the audit trail
+- Compares the fetched profile against a baseline JSON file
+- Baseline file must be a JSON export of a Bot Defense profile (see below)
+
+#### Obtaining a Bot Defense Baseline
+
+Export a "gold standard" Bot Defense profile from the BIG-IP REST API:
+
+```bash
+curl -sk -u admin:password \
+  https://bigip/mgmt/tm/security/bot-defense/profile/~Common~my_bot_profile \
+  -o ./baseline/bot_baseline.json
+```
+
+Or via the BIG-IP GUI: **Security > Bot Defense > Bot Defense Profiles**, select
+the profile, and use the API URL shown in your browser's developer tools.
 
 ---
 
@@ -66,22 +110,30 @@ curl -sk -u admin:password \
 
 ### 2. Run the Audit
 
-**Basic usage** (will prompt for password):
+**WAF audit** (will prompt for password):
 
 ```bash
-python -m src.main \
+python -m src.main --WAF \
   --host 192.168.1.245 \
   --username admin \
   --baseline ./baseline/corporate_baseline.xml
 ```
 
-**Full options**:
+**Bot Defense audit**:
 
 ```bash
-python -m src.main \
+python -m src.main --BOT \
+  --host 192.168.1.245 \
+  --username admin \
+  --baseline ./baseline/bot_baseline.json
+```
+
+**Full options (WAF)**:
+
+```bash
+python -m src.main --WAF \
   --host 10.1.1.4 \
   --username admin \
-  --password 'S3cret!' \
   --baseline ./baseline/disa_stig_baseline.xml \
   --output-dir ./audit_results \
   --format both \
@@ -112,20 +164,37 @@ python -m src.main --baseline ./baseline/corporate_baseline.xml
 
 ## CLI Reference
 
+### Audit Mode Flags
+
+These flags are mutually exclusive. If neither is supplied, `--WAF` is the default.
+
+| Flag | Description |
+|------|-------------|
+| `--WAF` | Audit ASM/AWAF security policies against an XML baseline |
+| `--BOT` | Audit Bot Defense profiles against a JSON baseline |
+
+### Connection & Authentication
+
 | Argument | Env Var | Default | Description |
 |----------|---------|---------|-------------|
 | `--host` | `BIGIP_HOST` | required | BIG-IP management IP or FQDN |
 | `--username` | `BIGIP_USER` | required | Admin username |
-| `--password` | `BIGIP_PASS` | (prompt) | Password |
-| `--baseline` | `BASELINE_POLICY` | required | Path to baseline XML policy |
-| `--output-dir` | `OUTPUT_DIR` | `./output` | Output directory |
+| `--password` | `BIGIP_PASS` | (prompt) | Password (env var or interactive prompt only — not accepted in config file) |
+| `--login-provider` | `BIGIP_LOGIN_PROVIDER` | `tmos` | BIG-IP login provider (RADIUS/LDAP users may need to change this) |
+| `--verify-ssl` / `--no-verify-ssl` | `VERIFY_SSL` | `true` | TLS certificate verification |
+
+### Audit Options
+
+| Argument | Env Var | Default | Description |
+|----------|---------|---------|-------------|
+| `--baseline` | `BASELINE_POLICY` | required | Path to baseline file (XML for `--WAF`, JSON for `--BOT`) |
+| `--output-dir` | `OUTPUT_DIR` | `./output` | Output directory for exports and reports |
 | `--format` | `REPORT_FORMAT` | `both` | `html`, `markdown`, or `both` |
-| `--partitions` | `PARTITIONS` | (all) | Comma-separated partition list |
-| `--export-format` | `EXPORT_FORMAT` | `xml` | `xml` or `json` |
-| `--verify-ssl` / `--no-verify-ssl` | `VERIFY_SSL` | `false` | TLS verification |
-| `--concurrent-exports` | `CONCURRENT_EXPORTS` | `3` | Max parallel exports |
-| `-v` / `--verbose` | — | `false` | Debug logging |
-| `--config` | — | `config.yaml` | Config file path |
+| `--partitions` | `PARTITIONS` | (all) | Comma-separated partition list to audit |
+| `--export-format` | `EXPORT_FORMAT` | `xml` | WAF policy export format: `xml` or `json` |
+| `--concurrent-exports` | `CONCURRENT_EXPORTS` | `3` | Max parallel WAF export tasks (1–20) |
+| `-v` / `--verbose` | — | `false` | Enable debug logging |
+| `--config` | — | `config.yaml` | Path to YAML config file |
 
 Config file values are overridden by environment variables, which are overridden
 by CLI arguments.
@@ -135,6 +204,8 @@ by CLI arguments.
 ## Output Files
 
 After a run, the `--output-dir` (default `./output`) will contain:
+
+**WAF mode:**
 
 ```
 output/
@@ -148,6 +219,21 @@ output/
     ├── app2_waf_audit_report.md
     ├── app2_waf_audit_report.html
     ├── summary_audit_report.md        # Cross-policy summary
+    └── summary_audit_report.html
+```
+
+**Bot Defense mode:**
+
+```
+output/
+├── audit_20260303T143012.log
+├── bot-defense/
+│   ├── Common_my_bot_profile.json     # Raw profile JSON (audit trail)
+│   └── App1_strict_bot.json
+└── reports/
+    ├── my_bot_profile_audit_report.md
+    ├── my_bot_profile_audit_report.html
+    ├── summary_audit_report.md
     └── summary_audit_report.html
 ```
 
@@ -171,7 +257,7 @@ The CLI exits with:
 - **Code 0** — all policies scored ≥ 90%
 - **Code 1** — one or more policies scored < 90%, or export errors occurred
 
-### What triggers Critical findings
+### What triggers Critical findings — WAF mode
 
 | Section | Trigger |
 |---------|---------|
@@ -184,19 +270,58 @@ The CLI exits with:
 | Bot Defense | `enabled=true` in baseline, `enabled=false` in target |
 | Data Guard sub-controls | Credit card / SSN protection disabled in target |
 
+### What triggers Critical findings — Bot Defense mode
+
+| Section | Field | Trigger |
+|---------|-------|---------|
+| Core | `enforcementMode` | Baseline is `blocking`, target is not `blocking` — bot threats will not be blocked |
+| Core | `template` | Template downgraded (e.g. `strict` → `balanced` or `relaxed`) — security posture weakened |
+| Core | `browserMitigationAction` | Baseline is `block`, target is not `block` — suspicious browsers will not be blocked |
+| Mobile Detection | `allowAndroidRootedDevice` | Baseline disables rooted Android devices, target allows them |
+| Mobile Detection | `allowEmulators` | Baseline blocks emulators, target allows them |
+| Mobile Detection | `allowJailbrokenDevices` | Baseline blocks jailbroken iOS devices, target allows them |
+| Mobile Detection | `blockDebuggerEnabledDevice` | Baseline blocks debugger-enabled devices, target does not |
+
+### What triggers Warning findings — Bot Defense mode
+
+| Section | Field | Trigger |
+|---------|-------|---------|
+| Core | `enforcementMode` | Any other enforcement mode mismatch not covered by Critical |
+| Core | `template` | Template upgraded or changed laterally |
+| Core | `allowBrowserAccess` | Setting differs from baseline |
+| Core | `apiAccessStrictMitigation` | API access strict mitigation differs from baseline |
+| Core | `dosAttackStrictMitigation` | DoS attack strict mitigation differs from baseline |
+| Core | `signatureStagingUponUpdate` | Signature staging upon update differs from baseline |
+| Core | `crossDomainRequests` | Cross-domain requests setting differs from baseline |
+| Mobile Detection | `allowAnyAndroidPackage` | Differs from baseline |
+| Mobile Detection | `allowAnyIosPackage` | Differs from baseline |
+| Mobile Detection | `clientSideChallengeMode` | Differs from baseline |
+
+### What triggers Info findings — Bot Defense mode
+
+| Section | Field | Trigger |
+|---------|-------|---------|
+| Core | `performChallengeInTransparent` | Differs from baseline |
+| Core | `singlePageApplication` | Differs from baseline |
+| Core | `deviceidMode` | Device ID mode differs from baseline |
+| Core | `gracePeriod` | Grace period value differs from baseline |
+| Core | `enforcementReadinessPeriod` | Enforcement readiness period differs from baseline |
+
 ---
 
 ## Architecture
 
 ```
 src/
-├── main.py            # CLI entry point (argparse, orchestration)
-├── bigip_client.py    # iControl REST client (token auth, chunked transfers)
-├── policy_exporter.py # Policy discovery + async export workflow
-├── policy_parser.py   # XML → normalized Python dict (lxml / stdlib fallback)
-├── policy_comparator.py # Diff engine → ComparisonResult + DiffItem dataclasses
-├── report_generator.py  # Markdown + self-contained HTML reports
-└── utils.py           # Logging, retry decorator, filename helpers
+├── main.py                  # CLI entry point (argparse, audit mode dispatch)
+├── bigip_client.py          # iControl REST client (token auth, chunked transfers)
+├── policy_exporter.py       # WAF policy discovery + async export workflow
+├── policy_parser.py         # XML → normalized Python dict (lxml / stdlib fallback)
+├── policy_comparator.py     # WAF diff engine → ComparisonResult + DiffItem dataclasses
+├── bot_defense_auditor.py   # Bot Defense profile discovery + REST fetch workflow
+├── bot_defense_comparator.py # Bot Defense diff engine (JSON profile comparison)
+├── report_generator.py      # Markdown + self-contained HTML reports (shared by both modes)
+└── utils.py                 # Logging, retry decorator, filename helpers
 ```
 
 **Key design decisions:**
