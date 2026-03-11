@@ -214,7 +214,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Setup logging first
     ensure_dir(output_dir)
-    log = setup_logging(verbose, output_dir)
+    log = setup_logging(verbose, output_dir, audit_mode)
     logger = get_logger("main")
 
     # Validate required arguments

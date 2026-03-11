@@ -69,8 +69,9 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
     """Write a Markdown audit report. Returns the file path."""
     reports_dir = ensure_dir(Path(output_dir) / "reports")
     safe_name = result.policy_name.replace('/', '_').replace(' ', '_')
-    out_path = reports_dir / f"{safe_name}_audit_report.md"
     is_bot = getattr(result, "profile_type", "waf") == "bot"
+    prefix = "BOT" if is_bot else "WAF"
+    out_path = reports_dir / f"{prefix}_{safe_name}_audit_report.md"
 
     lines: List[str] = []
     _md_header(lines, result)
@@ -537,8 +538,9 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
     """Write a self-contained HTML audit report. Returns the file path."""
     reports_dir = ensure_dir(Path(output_dir) / "reports")
     safe_name = result.policy_name.replace('/', '_').replace(' ', '_')
-    out_path = reports_dir / f"{safe_name}_audit_report.html"
     is_bot = getattr(result, "profile_type", "waf") == "bot"
+    prefix = "BOT" if is_bot else "WAF"
+    out_path = reports_dir / f"{prefix}_{safe_name}_audit_report.html"
 
     score = result.score
     pass_fail = "PASS" if score >= _PASS_THRESHOLD else "FAIL"
@@ -1190,7 +1192,8 @@ def _write_summary_md(results: List[ComparisonResult], reports_dir: Path) -> Non
                 f"| {totals.get('critical',0)} | {totals.get('warning',0)} | {totals.get('info',0)} |"
             )
 
-    out = reports_dir / "summary_audit_report.md"
+    prefix = "BOT" if is_bot else "WAF"
+    out = reports_dir / f"{prefix}_summary_audit_report.md"
     out.write_text('\n'.join(lines), encoding='utf-8')
     _log.info("Summary Markdown: %s", out)
 
@@ -1284,6 +1287,7 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
         + "".join(rows) +
         "</tbody></table></body></html>"
     )
-    out = reports_dir / "summary_audit_report.html"
+    prefix = "BOT" if is_bot else "WAF"
+    out = reports_dir / f"{prefix}_summary_audit_report.html"
     out.write_text(content, encoding='utf-8')
     _log.info("Summary HTML: %s", out)
