@@ -92,7 +92,7 @@ class BotDefenseAuditor:
 
         # Persist to disk for audit trail
         safe_name = full_path.strip("/").replace("/", "_")
-        local_path = self.fetch_dir / f"{safe_name}.json"
+        local_path = self.fetch_dir / f"BOT_{safe_name}.json"
         local_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         self.log.debug("Saved profile JSON to %s", local_path)
 

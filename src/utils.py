@@ -65,7 +65,7 @@ class _ColorFormatter(logging.Formatter):
         return super().format(record)
 
 
-def setup_logging(verbose: bool, output_dir: str) -> logging.Logger:
+def setup_logging(verbose: bool, output_dir: str, mode: str = "waf") -> logging.Logger:
     """Configure root logger for console + file output."""
     log_level = logging.DEBUG if verbose else logging.INFO
     logger = logging.getLogger("f5_auditor")
@@ -83,7 +83,8 @@ def setup_logging(verbose: bool, output_dir: str) -> logging.Logger:
     # File handler
     Path(output_dir).mkdir(mode=0o700, parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%dT%H%M%S")
-    log_path = Path(output_dir) / f"audit_{ts}.log"
+    mode_prefix = "BOT" if mode.lower() == "bot" else "WAF"
+    log_path = Path(output_dir) / f"{mode_prefix}_audit_{ts}.log"
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter(
@@ -135,12 +136,12 @@ def sanitize_filename(name: str) -> str:
 def policy_export_filename(full_path: str, export_format: str = "xml") -> str:
     """
     Build a safe export filename from a policy fullPath.
-    /Common/my_waf -> Common_my_waf_20260303T1430.xml
+    /Common/my_waf -> WAF_Common_my_waf_20260303T1430.xml
     """
     clean = full_path.lstrip('/')
     sanitized = sanitize_filename(clean.replace('/', '_'))
     ts = datetime.now().strftime("%Y%m%dT%H%M")
-    return f"{sanitized}_{ts}.{export_format}"
+    return f"WAF_{sanitized}_{ts}.{export_format}"
 
 
 # ── Misc helpers ───────────────────────────────────────────────────────────────
