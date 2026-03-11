@@ -64,6 +64,8 @@ class ComparisonResult:
     # Raw signature set lists for inventory reporting (Learn / Alarm / Block per set)
     target_signature_sets:   List[Dict] = field(default_factory=list)
     baseline_signature_sets: List[Dict] = field(default_factory=list)
+    # Audit mode: "waf" (ASM/AWAF policy) or "bot" (Bot Defense profile)
+    profile_type: str = "waf"
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
