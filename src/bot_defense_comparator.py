@@ -74,6 +74,9 @@ def compare_bot_profiles(
 
     _cmp_bd_core(baseline, target, result)
     _cmp_bd_mobile_detection(baseline, target, result)
+    _cmp_bd_signature_enforcement(baseline, target, result)
+    _cmp_bd_whitelist(baseline, target, result)
+    _cmp_bd_browsers(baseline, target, result)
 
     _build_summary(result)
     result.score = _calculate_score(result.diffs)
@@ -213,6 +216,15 @@ def _cmp_bd_core(baseline: Dict, target: Dict, result: ComparisonResult) -> None
                 description=desc,
             ))
 
+    # Store all tracked settings for the display table
+    _all_tracked = (
+        ["enforcementMode", "template", "browserMitigationAction"]
+        + [a for a, _, _ in _enabled_disabled_attrs]
+        + [a for a, _, _ in _info_attrs]
+    )
+    result.bot_mitigation_target   = {k: target.get(k)   for k in _all_tracked}
+    result.bot_mitigation_baseline = {k: baseline.get(k) for k in _all_tracked}
+
 
 def _cmp_bd_mobile_detection(
     baseline: Dict, target: Dict, result: ComparisonResult
@@ -302,3 +314,363 @@ def _cmp_bd_mobile_detection(
             severity=sev,
             description=desc,
         ))
+
+
+def _get_subcollection(profile: Dict, key: str) -> List[Dict]:
+    """
+    Return the items list from a sub-collection field.
+
+    Handles both expanded sub-collections (``{key}Reference: {items: [...]}``
+    returned when the API is called with ``?expandSubcollections=true``) and
+    inline lists (``{key}: [...]``).
+    """
+    # Expanded reference: signaturesReference.items / whitelistReference.items …
+    ref = profile.get(f"{key}Reference", {})
+    if isinstance(ref, dict) and "items" in ref:
+        return ref["items"]
+    # Inline list: signatures / whitelist / browsers
+    inline = profile.get(key, [])
+    if isinstance(inline, list):
+        return inline
+    return []
+
+
+def _cmp_bd_signature_enforcement(
+    baseline: Dict, target: Dict, result: ComparisonResult
+) -> None:
+    """
+    Compare Bot Defense signature / signature-category enforcement settings.
+
+    Each entry is keyed by ``name`` (signature category name).  The relevant
+    attributes per entry are ``enabled`` and ``action`` (block/detect/alarm).
+    """
+    b_sigs = {
+        s.get("name", ""): s
+        for s in _get_subcollection(baseline, "signatures")
+        if s.get("name")
+    }
+    t_sigs = {
+        s.get("name", ""): s
+        for s in _get_subcollection(target, "signatures")
+        if s.get("name")
+    }
+
+    if not b_sigs and not t_sigs:
+        return
+
+    # Action severity ranking: higher = more restrictive
+    _ACTION_RANK: Dict[str, int] = {
+        "detect": 0,
+        "alarm":  0,
+        "log":    0,
+        "block":  1,
+    }
+
+    all_names = sorted(set(b_sigs) | set(t_sigs))
+    display_rows: List[Dict] = []
+
+    for name in all_names:
+        b_entry = b_sigs.get(name)
+        t_entry = t_sigs.get(name)
+
+        if b_entry is None:
+            # Extra in target — informational
+            display_rows.append({
+                "name": name,
+                "baseline_enabled": None,
+                "target_enabled": t_entry.get("enabled"),
+                "baseline_action": None,
+                "target_action": t_entry.get("action"),
+                "baseline_match": "extra",
+            })
+            _add(result, DiffItem(
+                section="bot-defense.signatures",
+                element_name=name,
+                attribute="enabled",
+                baseline_value=None,
+                target_value=t_entry.get("enabled"),
+                severity=SEVERITY_INFO,
+                description=f"Signature category '{name}' is present in target but not in baseline.",
+            ))
+            continue
+
+        if t_entry is None:
+            # Missing from target
+            display_rows.append({
+                "name": name,
+                "baseline_enabled": b_entry.get("enabled"),
+                "target_enabled": None,
+                "baseline_action": b_entry.get("action"),
+                "target_action": None,
+                "baseline_match": "missing",
+            })
+            _add(result, DiffItem(
+                section="bot-defense.signatures",
+                element_name=name,
+                attribute="enabled",
+                baseline_value=b_entry.get("enabled"),
+                target_value=None,
+                severity=SEVERITY_WARNING,
+                description=f"Signature category '{name}' is present in baseline but missing from target.",
+            ))
+            continue
+
+        # Both present — compare enabled and action
+        b_enabled = b_entry.get("enabled")
+        t_enabled = t_entry.get("enabled")
+        b_action  = b_entry.get("action")
+        t_action  = t_entry.get("action")
+
+        match = True
+        if b_enabled != t_enabled:
+            match = False
+            sev = (
+                SEVERITY_CRITICAL
+                if b_enabled is True and t_enabled is False
+                else SEVERITY_WARNING
+            )
+            _add(result, DiffItem(
+                section="bot-defense.signatures",
+                element_name=name,
+                attribute="enabled",
+                baseline_value=b_enabled,
+                target_value=t_enabled,
+                severity=sev,
+                description=(
+                    f"Signature category '{name}' enabled state differs. "
+                    f"Baseline: {b_enabled}, Target: {t_enabled}."
+                    + (" Category will NOT be enforced." if sev == SEVERITY_CRITICAL else "")
+                ),
+            ))
+
+        if b_action is not None and b_action != t_action:
+            match = False
+            b_rank = _ACTION_RANK.get(str(b_action).lower(), 0)
+            t_rank = _ACTION_RANK.get(str(t_action).lower(), 0)
+            sev = SEVERITY_CRITICAL if t_rank < b_rank else SEVERITY_WARNING
+            _add(result, DiffItem(
+                section="bot-defense.signatures",
+                element_name=name,
+                attribute="action",
+                baseline_value=b_action,
+                target_value=t_action,
+                severity=sev,
+                description=(
+                    f"Signature category '{name}' action changed from '{b_action}' to '{t_action}'."
+                    + (" Enforcement has been weakened." if sev == SEVERITY_CRITICAL else "")
+                ),
+            ))
+
+        display_rows.append({
+            "name": name,
+            "baseline_enabled": b_enabled,
+            "target_enabled": t_enabled,
+            "baseline_action": b_action,
+            "target_action": t_action,
+            "baseline_match": "match" if match else "diff",
+        })
+
+    result.bot_signatures = display_rows
+
+
+def _cmp_bd_whitelist(
+    baseline: Dict, target: Dict, result: ComparisonResult
+) -> None:
+    """
+    Compare Bot Defense whitelist (allowed/trusted source) entries.
+
+    Entries are keyed by name.  Differences in ``ipAddress``, ``ipMask``,
+    ``matchType``, ``enabled``, and ``description`` are flagged.
+    """
+    def _entry_key(e: Dict) -> str:
+        return e.get("name") or e.get("ipAddress", "")
+
+    b_wl = {_entry_key(e): e for e in _get_subcollection(baseline, "whitelist") if _entry_key(e)}
+    t_wl = {_entry_key(e): e for e in _get_subcollection(target, "whitelist") if _entry_key(e)}
+
+    if not b_wl and not t_wl:
+        return
+
+    all_keys = sorted(set(b_wl) | set(t_wl))
+    display_rows: List[Dict] = []
+
+    _CMP_ATTRS = ["ipAddress", "ipMask", "matchType", "enabled", "description"]
+
+    for key in all_keys:
+        b_entry = b_wl.get(key)
+        t_entry = t_wl.get(key)
+
+        if b_entry is None:
+            # New whitelist entry in target — potential security relaxation
+            display_rows.append({
+                "name": key,
+                "baseline_entry": None,
+                "target_entry": t_entry,
+                "baseline_match": "extra",
+            })
+            _add(result, DiffItem(
+                section="bot-defense.whitelist",
+                element_name=key,
+                attribute="present",
+                baseline_value=False,
+                target_value=True,
+                severity=SEVERITY_WARNING,
+                description=(
+                    f"Whitelist entry '{key}' is in target but not in baseline. "
+                    "A new trusted source exception has been added."
+                ),
+            ))
+            continue
+
+        if t_entry is None:
+            # Entry removed from target
+            display_rows.append({
+                "name": key,
+                "baseline_entry": b_entry,
+                "target_entry": None,
+                "baseline_match": "missing",
+            })
+            _add(result, DiffItem(
+                section="bot-defense.whitelist",
+                element_name=key,
+                attribute="present",
+                baseline_value=True,
+                target_value=False,
+                severity=SEVERITY_INFO,
+                description=f"Whitelist entry '{key}' is in baseline but missing from target.",
+            ))
+            continue
+
+        # Both present — compare attributes
+        differs = False
+        for attr in _CMP_ATTRS:
+            b_val = b_entry.get(attr)
+            t_val = t_entry.get(attr)
+            if b_val is not None and b_val != t_val:
+                differs = True
+                sev = (
+                    SEVERITY_CRITICAL
+                    if attr == "enabled" and b_val is True and t_val is False
+                    else SEVERITY_WARNING
+                )
+                _add(result, DiffItem(
+                    section="bot-defense.whitelist",
+                    element_name=key,
+                    attribute=attr,
+                    baseline_value=b_val,
+                    target_value=t_val,
+                    severity=sev,
+                    description=f"Whitelist entry '{key}' attribute '{attr}' differs from baseline.",
+                ))
+
+        display_rows.append({
+            "name": key,
+            "baseline_entry": b_entry,
+            "target_entry": t_entry,
+            "baseline_match": "diff" if differs else "match",
+        })
+
+    result.bot_whitelist = display_rows
+
+
+def _cmp_bd_browsers(
+    baseline: Dict, target: Dict, result: ComparisonResult
+) -> None:
+    """
+    Compare Bot Defense browser validation settings.
+
+    Entries are keyed by ``name``.  The primary attribute is ``enabled``;
+    any additional per-browser attributes present in the baseline are also
+    compared.
+    """
+    b_br = {
+        e.get("name", ""): e
+        for e in _get_subcollection(baseline, "browsers")
+        if e.get("name")
+    }
+    t_br = {
+        e.get("name", ""): e
+        for e in _get_subcollection(target, "browsers")
+        if e.get("name")
+    }
+
+    if not b_br and not t_br:
+        return
+
+    all_names = sorted(set(b_br) | set(t_br))
+    display_rows: List[Dict] = []
+
+    for name in all_names:
+        b_entry = b_br.get(name)
+        t_entry = t_br.get(name)
+
+        if b_entry is None:
+            display_rows.append({
+                "name": name,
+                "baseline_entry": None,
+                "target_entry": t_entry,
+                "baseline_match": "extra",
+            })
+            _add(result, DiffItem(
+                section="bot-defense.browsers",
+                element_name=name,
+                attribute="present",
+                baseline_value=False,
+                target_value=True,
+                severity=SEVERITY_INFO,
+                description=f"Browser entry '{name}' is present in target but not in baseline.",
+            ))
+            continue
+
+        if t_entry is None:
+            display_rows.append({
+                "name": name,
+                "baseline_entry": b_entry,
+                "target_entry": None,
+                "baseline_match": "missing",
+            })
+            _add(result, DiffItem(
+                section="bot-defense.browsers",
+                element_name=name,
+                attribute="present",
+                baseline_value=True,
+                target_value=False,
+                severity=SEVERITY_WARNING,
+                description=f"Browser entry '{name}' is in baseline but missing from target.",
+            ))
+            continue
+
+        # Compare all attributes present in baseline entry
+        differs = False
+        for attr, b_val in b_entry.items():
+            if attr in ("name", "kind", "selfLink", "generation", "lastUpdateMicros"):
+                continue
+            t_val = t_entry.get(attr)
+            if b_val != t_val:
+                differs = True
+                sev = (
+                    SEVERITY_CRITICAL
+                    if attr == "enabled" and b_val is True and t_val is False
+                    else SEVERITY_WARNING
+                )
+                _add(result, DiffItem(
+                    section="bot-defense.browsers",
+                    element_name=name,
+                    attribute=attr,
+                    baseline_value=b_val,
+                    target_value=t_val,
+                    severity=sev,
+                    description=(
+                        f"Browser '{name}' attribute '{attr}' differs from baseline."
+                        + (" Browser validation disabled." if sev == SEVERITY_CRITICAL else "")
+                    ),
+                ))
+
+        display_rows.append({
+            "name": name,
+            "baseline_entry": b_entry,
+            "target_entry": t_entry,
+            "baseline_match": "diff" if differs else "match",
+        })
+
+    result.bot_browsers = display_rows

@@ -343,7 +343,7 @@ class BotDefenseAuditor:
         api_path = f"{_BD_PROFILE_EP}/~{encoded}"
 
         self.log.info("Fetching Bot Defense profile: %s", full_path)
-        data = self.client.get(api_path)
+        data = self.client.get(api_path, params={"expandSubcollections": "true"})
 
         # Persist to disk for audit trail
         safe_name = full_path.strip("/").replace("/", "_")

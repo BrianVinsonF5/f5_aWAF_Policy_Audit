@@ -79,6 +79,11 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
         _md_signature_sets_table(lines, result)
         _md_policy_builder_status(lines, result)
         _md_violations_table(lines, result)
+    else:
+        _md_bot_mitigation_settings(lines, result)
+        _md_bot_signature_enforcement(lines, result)
+        _md_bot_whitelist(lines, result)
+        _md_bot_browsers(lines, result)
     _md_summary_table(lines, result)
     _md_findings(lines, result)
     if not is_bot:
@@ -652,6 +657,20 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
             )
             parts.append(_html_violations_table(result.violations, result.baseline_violations))
             parts.append("</div></details>")
+    else:
+        # Bot Defense sections: Mitigation Settings, Signature Enforcement, Whitelist, Browsers
+        bot_mit = _html_bot_mitigation_table(result)
+        if bot_mit:
+            parts.append(bot_mit)
+        bot_sig = _html_bot_signature_enforcement_table(result)
+        if bot_sig:
+            parts.append(bot_sig)
+        bot_wl = _html_bot_whitelist_table(result)
+        if bot_wl:
+            parts.append(bot_wl)
+        bot_br = _html_bot_browsers_table(result)
+        if bot_br:
+            parts.append(bot_br)
 
     # Executive summary
     parts.append("<h2>Executive Summary</h2>")
@@ -1003,6 +1022,369 @@ def _html_findings_table(diffs: List[DiffItem]) -> str:
         "<th>Baseline</th><th>Target</th><th>Description</th><th>Severity</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
     )
+
+
+# ── Bot Defense dedicated display helpers ──────────────────────────────────────
+
+# Settings shown in the Bot Mitigation Settings table, in display order.
+# Tuples: (section_label, display_name, key)
+_BD_MITIGATION_ROWS = [
+    ("Core",         "Enforcement Mode",                 "enforcementMode"),
+    ("Core",         "Template",                         "template"),
+    ("Core",         "Browser Mitigation Action",        "browserMitigationAction"),
+    ("Core",         "Allow Browser Access",             "allowBrowserAccess"),
+    ("Core",         "API Access Strict Mitigation",     "apiAccessStrictMitigation"),
+    ("Core",         "DoS Attack Strict Mitigation",     "dosAttackStrictMitigation"),
+    ("Core",         "Signature Staging Upon Update",    "signatureStagingUponUpdate"),
+    ("Core",         "Cross-Domain Requests",            "crossDomainRequests"),
+    ("Advanced",     "Perform Challenge In Transparent", "performChallengeInTransparent"),
+    ("Advanced",     "Single Page Application",          "singlePageApplication"),
+    ("Advanced",     "Device ID Mode",                   "deviceidMode"),
+    ("Advanced",     "Grace Period (seconds)",           "gracePeriod"),
+    ("Advanced",     "Enforcement Readiness Period (days)", "enforcementReadinessPeriod"),
+]
+
+
+def _html_bot_mitigation_table(result: ComparisonResult) -> str:
+    """Render a collapsible Bot Mitigation Settings comparison table (HTML)."""
+    t_cfg = result.bot_mitigation_target
+    b_cfg = result.bot_mitigation_baseline
+    if not t_cfg:
+        return ""
+
+    def _fmt(val) -> str:
+        if val is None or val == "":
+            return "<em>n/a</em>"
+        if isinstance(val, bool):
+            return _e(human_bool(val))
+        return _e(str(val))
+
+    rows = []
+    last_section = None
+    for section, label, key in _BD_MITIGATION_ROWS:
+        if section != last_section:
+            rows.append(
+                f"<tr style='background:#e8ecf5'>"
+                f"<td colspan='4' style='font-weight:bold;color:#16213e;padding:6px 10px'>"
+                f"{_e(section)}</td></tr>"
+            )
+            last_section = section
+
+        t_val = t_cfg.get(key)
+        b_val = b_cfg.get(key)
+
+        if b_val is None or b_val == "":
+            match_td = "<td class='match-na'>—</td>"
+        elif b_val == t_val:
+            match_td = "<td class='match-ok'>&#10003;</td>"
+        else:
+            match_td = "<td class='match-diff'>&#9888;</td>"
+
+        rows.append(
+            f"<tr>"
+            f"<td>{_e(label)}</td>"
+            f"<td>{_fmt(b_val)}</td>"
+            f"<td>{_fmt(t_val)}</td>"
+            f"{match_td}"
+            f"</tr>"
+        )
+
+    table = (
+        "<details open><summary>Bot Mitigation Settings Comparison</summary>"
+        "<div class='details-body'>"
+        "<table class='findings'>"
+        "<thead><tr>"
+        "<th>Setting</th><th>Baseline</th><th>Target</th><th>Match</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows) +
+        "</tbody></table>"
+        "</div></details>"
+    )
+    return "<h2>Bot Mitigation Settings</h2>" + table
+
+
+def _html_bot_signature_enforcement_table(result: ComparisonResult) -> str:
+    """Render a collapsible Bot Signature Enforcement table (HTML)."""
+    rows_data = result.bot_signatures
+    if not rows_data:
+        return ""
+
+    rows = []
+    for row in sorted(rows_data, key=lambda r: r.get("name", "")):
+        name = _e(row.get("name", ""))
+        b_enabled = row.get("baseline_enabled")
+        t_enabled = row.get("target_enabled")
+        b_action  = row.get("baseline_action")
+        t_action  = row.get("target_action")
+        bm        = row.get("baseline_match", "match")
+
+        if bm == "extra":
+            match_td = "<td class='match-na'>+ Extra</td>"
+        elif bm == "missing":
+            match_td = "<td class='match-diff'>&#9888; Missing</td>"
+        elif bm == "diff":
+            match_td = "<td class='match-diff'>&#9888; Differs</td>"
+        else:
+            match_td = "<td class='match-ok'>&#10003; Match</td>"
+
+        rows.append(
+            f"<tr>"
+            f"<td>{name}</td>"
+            f"<td style='text-align:center'>{_e(human_bool(b_enabled)) if b_enabled is not None else '<em>—</em>'}</td>"
+            f"<td style='text-align:center'>{_e(human_bool(t_enabled)) if t_enabled is not None else '<em>—</em>'}</td>"
+            f"<td style='text-align:center'>{_e(str(b_action)) if b_action is not None else '<em>—</em>'}</td>"
+            f"<td style='text-align:center'>{_e(str(t_action)) if t_action is not None else '<em>—</em>'}</td>"
+            f"{match_td}"
+            f"</tr>"
+        )
+
+    n = len(rows_data)
+    body = (
+        f"<p style='margin:8px 0'>Bot signature categories and their enforcement status.</p>"
+        f"<table class='findings'>"
+        f"<thead><tr>"
+        f"<th>Category Name</th>"
+        f"<th style='text-align:center'>Baseline Enabled</th>"
+        f"<th style='text-align:center'>Target Enabled</th>"
+        f"<th style='text-align:center'>Baseline Action</th>"
+        f"<th style='text-align:center'>Target Action</th>"
+        f"<th style='text-align:center'>Baseline Match</th>"
+        f"</tr></thead><tbody>"
+        + "".join(rows) +
+        "</tbody></table>"
+    )
+    return (
+        f"<h2>Signature Enforcement</h2>"
+        f"<details open><summary>Signature Category Inventory ({n})</summary>"
+        f"<div class='details-body'>{body}</div></details>"
+    )
+
+
+def _html_bot_whitelist_table(result: ComparisonResult) -> str:
+    """Render a collapsible Bot Defense Whitelist table (HTML)."""
+    rows_data = result.bot_whitelist
+    if not rows_data:
+        return ""
+
+    rows = []
+    for row in sorted(rows_data, key=lambda r: r.get("name", "")):
+        name = _e(row.get("name", ""))
+        bm   = row.get("baseline_match", "match")
+        t_e  = row.get("target_entry") or {}
+        b_e  = row.get("baseline_entry") or {}
+
+        match_type = _e(t_e.get("matchType") or b_e.get("matchType") or "—")
+        ip_addr    = _e(t_e.get("ipAddress") or b_e.get("ipAddress") or "—")
+        ip_mask    = _e(t_e.get("ipMask")    or b_e.get("ipMask")    or "—")
+        enabled    = t_e.get("enabled") if t_e else b_e.get("enabled")
+        desc_val   = _e(t_e.get("description") or b_e.get("description") or "")
+
+        if bm == "extra":
+            match_td = "<td class='match-na'>+ Added</td>"
+        elif bm == "missing":
+            match_td = "<td class='match-diff'>&#9888; Removed</td>"
+        elif bm == "diff":
+            match_td = "<td class='match-diff'>&#9888; Differs</td>"
+        else:
+            match_td = "<td class='match-ok'>&#10003; Match</td>"
+
+        rows.append(
+            f"<tr>"
+            f"<td>{name}</td>"
+            f"<td>{match_type}</td>"
+            f"<td>{ip_addr}</td>"
+            f"<td>{ip_mask}</td>"
+            f"<td style='text-align:center'>{_e(human_bool(enabled)) if enabled is not None else '<em>—</em>'}</td>"
+            f"<td>{desc_val}</td>"
+            f"{match_td}"
+            f"</tr>"
+        )
+
+    n = len(rows_data)
+    body = (
+        f"<p style='margin:8px 0'>Whitelist (trusted source) entries and their comparison to the baseline.</p>"
+        f"<table class='findings'>"
+        f"<thead><tr>"
+        f"<th>Name</th><th>Match Type</th><th>IP Address</th><th>IP Mask</th>"
+        f"<th style='text-align:center'>Enabled</th><th>Description</th>"
+        f"<th style='text-align:center'>Baseline Match</th>"
+        f"</tr></thead><tbody>"
+        + "".join(rows) +
+        "</tbody></table>"
+    )
+    return (
+        f"<h2>Whitelist (Trusted Sources)</h2>"
+        f"<details open><summary>Whitelist Entry Inventory ({n})</summary>"
+        f"<div class='details-body'>{body}</div></details>"
+    )
+
+
+def _html_bot_browsers_table(result: ComparisonResult) -> str:
+    """Render a collapsible Bot Defense Browsers table (HTML)."""
+    rows_data = result.bot_browsers
+    if not rows_data:
+        return ""
+
+    rows = []
+    for row in sorted(rows_data, key=lambda r: r.get("name", "")):
+        name = _e(row.get("name", ""))
+        bm   = row.get("baseline_match", "match")
+        t_e  = row.get("target_entry") or {}
+        b_e  = row.get("baseline_entry") or {}
+
+        t_enabled = t_e.get("enabled")
+        b_enabled = b_e.get("enabled")
+
+        if bm == "extra":
+            match_td = "<td class='match-na'>+ Added</td>"
+        elif bm == "missing":
+            match_td = "<td class='match-diff'>&#9888; Removed</td>"
+        elif bm == "diff":
+            match_td = "<td class='match-diff'>&#9888; Differs</td>"
+        else:
+            match_td = "<td class='match-ok'>&#10003; Match</td>"
+
+        rows.append(
+            f"<tr>"
+            f"<td>{name}</td>"
+            f"<td style='text-align:center'>{_e(human_bool(b_enabled)) if b_enabled is not None else '<em>—</em>'}</td>"
+            f"<td style='text-align:center'>{_e(human_bool(t_enabled)) if t_enabled is not None else '<em>—</em>'}</td>"
+            f"{match_td}"
+            f"</tr>"
+        )
+
+    n = len(rows_data)
+    body = (
+        f"<p style='margin:8px 0'>Browser validation entries and their comparison to the baseline.</p>"
+        f"<table class='findings'>"
+        f"<thead><tr>"
+        f"<th>Browser Name</th>"
+        f"<th style='text-align:center'>Baseline Enabled</th>"
+        f"<th style='text-align:center'>Target Enabled</th>"
+        f"<th style='text-align:center'>Baseline Match</th>"
+        f"</tr></thead><tbody>"
+        + "".join(rows) +
+        "</tbody></table>"
+    )
+    return (
+        f"<h2>Browsers</h2>"
+        f"<details open><summary>Browser Entry Inventory ({n})</summary>"
+        f"<div class='details-body'>{body}</div></details>"
+    )
+
+
+# ── Markdown Bot Defense helpers ────────────────────────────────────────────────
+
+def _md_bot_mitigation_settings(lines: List[str], result: ComparisonResult) -> None:
+    """Render Bot Mitigation Settings comparison table (Markdown)."""
+    t_cfg = result.bot_mitigation_target
+    b_cfg = result.bot_mitigation_baseline
+    if not t_cfg:
+        return
+
+    def _fmt(val) -> str:
+        if val is None or val == "":
+            return "*(n/a)*"
+        return human_bool(val)
+
+    def _match(b_val, t_val) -> str:
+        if b_val is None or b_val == "":
+            return "—"
+        return "✓" if b_val == t_val else "✗"
+
+    lines += [
+        "## Bot Mitigation Settings",
+        "",
+        "| Section | Setting | Baseline | Target | Match |",
+        "|---------|---------|----------|--------|-------|",
+    ]
+    for section, label, key in _BD_MITIGATION_ROWS:
+        t_val = t_cfg.get(key)
+        b_val = b_cfg.get(key)
+        lines.append(
+            f"| {section} | {label} | {_fmt(b_val)} | {_fmt(t_val)} | {_match(b_val, t_val)} |"
+        )
+    lines.append("")
+
+
+def _md_bot_signature_enforcement(lines: List[str], result: ComparisonResult) -> None:
+    """Render Bot Signature Enforcement table (Markdown)."""
+    rows_data = result.bot_signatures
+    if not rows_data:
+        return
+
+    lines += [
+        "## Signature Enforcement",
+        "",
+        "Bot signature categories and their enforcement status.",
+        "",
+        "| Category Name | Baseline Enabled | Target Enabled | Baseline Action | Target Action | Baseline Match |",
+        "|---------------|:----------------:|:--------------:|:---------------:|:-------------:|:--------------:|",
+    ]
+    for row in sorted(rows_data, key=lambda r: r.get("name", "")):
+        bm = row.get("baseline_match", "match")
+        match_cell = {"extra": "+ Extra", "missing": "⚠ Missing", "diff": "✗ Differs"}.get(bm, "✓ Match")
+        b_en = human_bool(row.get("baseline_enabled")) if row.get("baseline_enabled") is not None else "—"
+        t_en = human_bool(row.get("target_enabled")) if row.get("target_enabled") is not None else "—"
+        b_ac = str(row.get("baseline_action") or "—")
+        t_ac = str(row.get("target_action") or "—")
+        lines.append(
+            f"| {row.get('name', '')} | {b_en} | {t_en} | {b_ac} | {t_ac} | {match_cell} |"
+        )
+    lines.append("")
+
+
+def _md_bot_whitelist(lines: List[str], result: ComparisonResult) -> None:
+    """Render Bot Defense Whitelist table (Markdown)."""
+    rows_data = result.bot_whitelist
+    if not rows_data:
+        return
+
+    lines += [
+        "## Whitelist (Trusted Sources)",
+        "",
+        "Whitelist entries and their comparison to the baseline.",
+        "",
+        "| Name | Match Type | IP Address | IP Mask | Enabled | Baseline Match |",
+        "|------|:----------:|:----------:|:-------:|:-------:|:--------------:|",
+    ]
+    for row in sorted(rows_data, key=lambda r: r.get("name", "")):
+        bm  = row.get("baseline_match", "match")
+        t_e = row.get("target_entry") or {}
+        b_e = row.get("baseline_entry") or {}
+        match_cell = {"extra": "+ Added", "missing": "⚠ Removed", "diff": "✗ Differs"}.get(bm, "✓ Match")
+        mt   = t_e.get("matchType") or b_e.get("matchType") or "—"
+        ip   = t_e.get("ipAddress") or b_e.get("ipAddress") or "—"
+        mask = t_e.get("ipMask")    or b_e.get("ipMask")    or "—"
+        en   = t_e.get("enabled") if t_e else b_e.get("enabled")
+        en_s = human_bool(en) if en is not None else "—"
+        lines.append(f"| {row.get('name', '')} | {mt} | {ip} | {mask} | {en_s} | {match_cell} |")
+    lines.append("")
+
+
+def _md_bot_browsers(lines: List[str], result: ComparisonResult) -> None:
+    """Render Bot Defense Browsers table (Markdown)."""
+    rows_data = result.bot_browsers
+    if not rows_data:
+        return
+
+    lines += [
+        "## Browsers",
+        "",
+        "Browser validation entries and their comparison to the baseline.",
+        "",
+        "| Browser Name | Baseline Enabled | Target Enabled | Baseline Match |",
+        "|-------------|:----------------:|:--------------:|:--------------:|",
+    ]
+    for row in sorted(rows_data, key=lambda r: r.get("name", "")):
+        bm  = row.get("baseline_match", "match")
+        t_e = row.get("target_entry") or {}
+        b_e = row.get("baseline_entry") or {}
+        match_cell = {"extra": "+ Added", "missing": "⚠ Removed", "diff": "✗ Differs"}.get(bm, "✓ Match")
+        b_en = human_bool(b_e.get("enabled")) if b_e.get("enabled") is not None else "—"
+        t_en = human_bool(t_e.get("enabled")) if t_e.get("enabled") is not None else "—"
+        lines.append(f"| {row.get('name', '')} | {b_en} | {t_en} | {match_cell} |")
+    lines.append("")
 
 
 def _html_blocking_comparison_table(diffs: List[DiffItem], violations: List[dict]) -> str:
