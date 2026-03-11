@@ -488,6 +488,9 @@ def _run_bot_audit(
 
     auditor.print_discovery_table(profiles)
 
+    # Enrich profiles with Virtual Server bindings (direct and via LTM policy)
+    auditor.enrich_with_virtual_servers(profiles)
+
     successes, failures = auditor.fetch_all(profiles)
     if failures:
         logger.warning(
@@ -525,6 +528,7 @@ def _run_bot_audit(
                 baseline_name=baseline_name,
                 device_hostname=device_hostname,
                 device_mgmt_ip=device_mgmt_ip,
+                virtual_servers=profile_meta.get("virtual_servers", []),
             )
         except Exception as exc:
             logger.error(
