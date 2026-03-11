@@ -36,6 +36,7 @@ def compare_bot_profiles(
     baseline_name: str = "baseline",
     device_hostname: str = "",
     device_mgmt_ip: str = "",
+    virtual_servers: Optional[List[Dict]] = None,
 ) -> ComparisonResult:
     """
     Compare a target Bot Defense profile dict against a baseline dict.
@@ -44,6 +45,9 @@ def compare_bot_profiles(
       GET /mgmt/tm/security/bot-defense/profile/{name}
 
     profile_meta may contain 'name', 'fullPath', and 'partition' keys.
+    virtual_servers is the list produced by
+    BotDefenseAuditor.enrich_with_virtual_servers() — the Virtual Servers
+    to which this profile is applied (directly or via Local Traffic Policy).
     Returns a ComparisonResult with profile_type="bot" set.
     """
     meta = profile_meta or {}
@@ -62,6 +66,7 @@ def compare_bot_profiles(
         enforcement_mode=target.get("enforcementMode", "transparent"),
         baseline_name=baseline_name,
         timestamp=iso_timestamp(),
+        virtual_servers=virtual_servers or [],
         device_hostname=device_hostname,
         device_mgmt_ip=device_mgmt_ip,
         profile_type="bot",

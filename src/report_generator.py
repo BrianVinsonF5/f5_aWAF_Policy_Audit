@@ -147,6 +147,7 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
         lines.append("")
 
         # Per-VS LTM policy rule detail
+        policy_col = "Bot Defense Profile" if is_bot else "WAF Security Policy"
         for vs in vs_list:
             for ltp in vs.get("ltm_policies", []):
                 rules = ltp.get("rules", [])
@@ -157,16 +158,19 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
                 lines += [
                     f"#### LTM Policy `{ltp_path}` on `{vs_path}`",
                     "",
-                    "| Rule | Host Condition(s) | WAF Security Policy |",
+                    f"| Rule | Host Condition(s) | {policy_col} |",
                     "|------|:-----------------:|---------------------|",
                 ]
                 for rule in rules:
                     hosts = ", ".join(
                         f"`{h}`" for h in rule.get("host_conditions", [])
                     ) or "*(any)*"
-                    waf = f"`{rule['waf_policy']}`" if rule.get("waf_policy") else "*(none)*"
+                    if is_bot:
+                        sec_pol = f"`{rule['bot_profile']}`" if rule.get("bot_profile") else "*(none)*"
+                    else:
+                        sec_pol = f"`{rule['waf_policy']}`" if rule.get("waf_policy") else "*(none)*"
                     lines.append(
-                        f"| `{rule.get('name', '')}` | {hosts} | {waf} |"
+                        f"| `{rule.get('name', '')}` | {hosts} | {sec_pol} |"
                     )
                 lines.append("")
     else:
@@ -616,8 +620,7 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         f"<tr><td>Partition</td><td>{_e(result.partition)}</td></tr>",
         f"<tr><td>Enforcement Mode</td><td>{_e(result.enforcement_mode)}</td></tr>",
     ]
-    if not is_bot:
-        parts.append(vs_html)
+    parts.append(vs_html)
     parts += [
         f"<tr><td>{baseline_label}</td><td>{_e(result.baseline_name)}</td></tr>",
         f"<tr><td>Audit Date</td><td>{_e(result.timestamp)}</td></tr>",
@@ -627,12 +630,13 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
         "</div>",
     ]
 
-    if not is_bot:
-        # LTM policy rule detail (collapsible, after the meta block)
-        ltm_section = _html_ltm_policy_section(vs_list)
-        if ltm_section:
-            parts.append(ltm_section)
+    # LTM policy rule detail (collapsible, after the meta block) — shown for
+    # both WAF and Bot Defense profiles whenever LTM policy bindings exist.
+    ltm_section = _html_ltm_policy_section(vs_list, is_bot=is_bot)
+    if ltm_section:
+        parts.append(ltm_section)
 
+    if not is_bot:
         # Policy Builder status banner + settings table
         parts.append(_html_policy_builder_status(result))
 
@@ -799,12 +803,14 @@ def _html_signature_sets_table(result: ComparisonResult) -> str:
     )
 
 
-def _html_ltm_policy_section(vs_list: List[Dict]) -> str:
+def _html_ltm_policy_section(vs_list: List[Dict], is_bot: bool = False) -> str:
     """
     Render a collapsible HTML section showing LTM policy rules for all
     virtual servers that have Local Traffic Policies attached.
 
-    Each rule row shows: rule name | host condition(s) | WAF security policy.
+    For WAF profiles each rule row shows: rule name | host condition(s) |
+    WAF security policy.  For Bot Defense profiles the last column shows the
+    Bot Defense profile referenced by the rule's botDefense action.
     Returns an empty string when there are no LTM policies to display.
     """
     # Collect (vs_path, ltp_path, [rules]) tuples that have content
@@ -823,14 +829,24 @@ def _html_ltm_policy_section(vs_list: List[Dict]) -> str:
         return ""
 
     total_rules = sum(len(e[2]) for e in entries)
+    policy_col_header = "Bot Defense Profile" if is_bot else "WAF Security Policy"
+    section_title = (
+        f"Local Traffic Policy — Host-to-Bot-Defense Mappings ({total_rules} rule{'s' if total_rules != 1 else ''})"
+        if is_bot else
+        f"Local Traffic Policy — Host-to-WAF Mappings ({total_rules} rule{'s' if total_rules != 1 else ''})"
+    )
+    section_desc = (
+        "Rules from LTM policies that map host conditions to Bot Defense profiles on each virtual server."
+        if is_bot else
+        "Rules from LTM policies that map host conditions to WAF security policies on each virtual server."
+    )
     parts = [
         f"<details open><summary>"
         f"<h2 style='display:inline;font-size:1em'>"
-        f"Local Traffic Policy — Host-to-WAF Mappings ({total_rules} rule{'s' if total_rules != 1 else ''})"
+        f"{section_title}"
         f"</h2></summary>"
         f"<div class='details-body'>"
-        f"<p style='margin:8px 0'>Rules from LTM policies that map host conditions "
-        f"to WAF security policies on each virtual server.</p>"
+        f"<p style='margin:8px 0'>{section_desc}</p>"
     ]
 
     for vs_path, ltp_path, rules in entries:
@@ -841,13 +857,16 @@ def _html_ltm_policy_section(vs_list: List[Dict]) -> str:
                 " ".join(f"<code>{_e(h)}</code>" for h in hosts)
                 if hosts else "<em>any</em>"
             )
-            waf = rule.get("waf_policy", "")
-            waf_cell = f"<code>{_e(waf)}</code>" if waf else "<em style='color:#999'>none</em>"
+            if is_bot:
+                sec_pol = rule.get("bot_profile", "")
+            else:
+                sec_pol = rule.get("waf_policy", "")
+            pol_cell = f"<code>{_e(sec_pol)}</code>" if sec_pol else "<em style='color:#999'>none</em>"
             rows.append(
                 f"<tr>"
                 f"<td><code>{_e(rule.get('name', ''))}</code></td>"
                 f"<td>{host_cell}</td>"
-                f"<td>{waf_cell}</td>"
+                f"<td>{pol_cell}</td>"
                 f"</tr>"
             )
 
@@ -858,7 +877,7 @@ def _html_ltm_policy_section(vs_list: List[Dict]) -> str:
             f"on <code>{_e(vs_path)}</code></span></h3>"
             f"<table class='findings'>"
             f"<thead><tr>"
-            f"<th>Rule</th><th>Host Condition(s)</th><th>WAF Security Policy</th>"
+            f"<th>Rule</th><th>Host Condition(s)</th><th>{_e(policy_col_header)}</th>"
             f"</tr></thead><tbody>"
             + "".join(rows) +
             f"</tbody></table>"
@@ -1155,16 +1174,23 @@ def _write_summary_md(results: List[ComparisonResult], reports_dir: Path) -> Non
         lines += [
             f"{subject_label}s sorted by compliance score (lowest first).",
             "",
-            f"| {subject_label} | Partition | Enforcement | Template | Score | Status | Critical | Warning | Info |",
-            f"|--------|-----------|-------------|----------|-------|--------|----------|---------|------|",
+            f"| {subject_label} | Partition | Enforcement | Template | Virtual Servers | Score | Status | Critical | Warning | Info |",
+            f"|--------|-----------|-------------|----------|-----------------|-------|--------|----------|---------|------|",
         ]
         for r in results:
             status = "PASS" if r.score >= _PASS_THRESHOLD else "FAIL"
             totals = r.summary.get("totals", {})
-            template = r.enforcement_mode  # use enforcement_mode field as it's set on result
+            if r.virtual_servers:
+                vs_cell = "<br>".join(
+                    f"`{vs.get('fullPath', vs.get('name', ''))}` ({vs.get('ip', '?')}:{vs.get('port', '?')}) [{vs.get('association_type', 'direct')}]"
+                    for vs in r.virtual_servers
+                )
+            else:
+                vs_cell = "*(none)*"
             lines.append(
                 f"| `{r.policy_path}` | {r.partition} | {r.enforcement_mode} "
                 f"| — "
+                f"| {vs_cell} "
                 f"| {r.score:.1f}% | {status} "
                 f"| {totals.get('critical',0)} | {totals.get('warning',0)} | {totals.get('info',0)} |"
             )
@@ -1214,22 +1240,19 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
         totals = r.summary.get("totals", {})
         score_class = "score-pass" if r.score >= _PASS_THRESHOLD else "score-fail"
 
-        if is_bot:
-            extra_cell = ""  # No VS column for bot profiles
+        if r.virtual_servers:
+            vs_items = "".join(
+                f"<div style='white-space:nowrap'>"
+                f"<code>{_e(vs.get('fullPath', vs.get('name', '')))}</code>"
+                f"&nbsp;<span style='color:#555;font-size:.85em'>"
+                f"{_e(vs.get('ip', '?'))}:{_e(vs.get('port', '?'))}"
+                f"&nbsp;[{_e(vs.get('association_type', 'direct'))}]"
+                f"</span></div>"
+                for vs in r.virtual_servers
+            )
+            extra_cell = f"<td>{vs_items}</td>"
         else:
-            if r.virtual_servers:
-                vs_items = "".join(
-                    f"<div style='white-space:nowrap'>"
-                    f"<code>{_e(vs.get('fullPath', vs.get('name', '')))}</code>"
-                    f"&nbsp;<span style='color:#555;font-size:.85em'>"
-                    f"{_e(vs.get('ip', '?'))}:{_e(vs.get('port', '?'))}"
-                    f"&nbsp;[{_e(vs.get('association_type', 'direct'))}]"
-                    f"</span></div>"
-                    for vs in r.virtual_servers
-                )
-                extra_cell = f"<td>{vs_items}</td>"
-            else:
-                extra_cell = "<td><em style='color:#999'>none</em></td>"
+            extra_cell = "<td><em style='color:#999'>none</em></td>"
 
         rows.append(
             f"<tr>"
@@ -1269,7 +1292,7 @@ def _write_summary_html(results: List[ComparisonResult], reports_dir: Path) -> N
     else:
         device_html = ""
 
-    extra_th = "" if is_bot else "<th>Virtual Servers</th>"
+    extra_th = "<th>Virtual Servers</th>"
     content = (
         "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
         f"<title>{_e(report_title)}</title>"
