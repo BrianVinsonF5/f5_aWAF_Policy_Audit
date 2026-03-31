@@ -28,11 +28,6 @@ from .bot_defense_auditor import BotDefenseAuditor
 from .bot_defense_comparator import compare_bot_profiles
 from .report_generator import generate_html, generate_markdown, generate_summary_reports
 
-try:
-    from tqdm import tqdm as _tqdm
-    _HAS_TQDM = True
-except ImportError:
-    _HAS_TQDM = False
 
 import urllib3
 
@@ -194,11 +189,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                              audit_cfg.get("report_format"), "both")
     export_format = _resolve(args.export_format, "EXPORT_FORMAT",
                              audit_cfg.get("export_format"), "xml")
-    # SSL verification defaults to True; coerce string env-var values correctly
-    # so that VERIFY_SSL=false doesn't silently evaluate to True.
-    _raw_ssl = _resolve(args.verify_ssl, "VERIFY_SSL", bigip_cfg.get("verify_ssl"), True)
+    
+    # SSL verification defaults to False; This alleviates issues when the BIG-IPs use self-signed certificates
+    _raw_ssl = _resolve(args.verify_ssl, "VERIFY_SSL", bigip_cfg.get("verify_ssl"), False)
     if isinstance(_raw_ssl, str):
-        verify_ssl = _raw_ssl.lower() in ("1", "true", "yes")
+        verify_ssl = _raw_ssl.lower() in ("0", "false", "no")
     else:
         verify_ssl = bool(_raw_ssl)
     concurrent = _resolve(args.concurrent_exports, "CONCURRENT_EXPORTS",
@@ -406,13 +401,8 @@ def _run_waf_audit(
     # Compare and report
     all_results = []
     total = len(successes)
-    iterable = (
-        _tqdm(successes, desc="Auditing policies", unit="policy")
-        if _HAS_TQDM
-        else successes
-    )
 
-    for idx, policy in enumerate(iterable, 1):
+    for idx, policy in enumerate(successes, 1):
         local_path = policy.get("local_path")
         if not local_path or not Path(local_path).exists():
             logger.error("Exported file missing for %s", policy["fullPath"])
