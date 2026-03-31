@@ -499,13 +499,8 @@ def _run_bot_audit(
     # Compare and report
     all_results = []
     total = len(successes)
-    iterable = (
-        tqdm(successes, desc="Auditing Bot Defense profiles", unit="profile")
-        if _HAS_TQDM
-        else successes
-    )
 
-    for idx, (profile_meta, profile_data) in enumerate(iterable, 1):
+    for idx, (profile_meta, profile_data) in enumerate(successes, 1):
         logger.info(
             "Auditing Bot Defense profile %d/%d: %s",
             idx, total, profile_meta["fullPath"],
