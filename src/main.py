@@ -26,7 +26,7 @@ from .policy_parser import parse_policy, get_policy_metadata
 from .policy_comparator import compare_policies
 from .bot_defense_auditor import BotDefenseAuditor
 from .bot_defense_comparator import compare_bot_profiles
-from .report_generator import generate_html, generate_markdown, generate_summary_reports
+from .report_generator import generate_html_dashboard, generate_markdown, generate_summary_reports
 
 try:
     from tqdm import tqdm as _tqdm
@@ -444,11 +444,15 @@ def _run_waf_audit(
 
         if "markdown" in formats:
             generate_markdown(cmp_result, output_dir)
-        if "html" in formats:
-            generate_html(cmp_result, output_dir)
+        # HTML is generated once as an interactive multi-policy dashboard.
 
     if all_results:
-        generate_summary_reports(all_results, output_dir, formats)
+        if "html" in formats:
+            generate_html_dashboard(all_results, output_dir)
+
+        summary_formats = [f for f in formats if f != "html"]
+        if summary_formats:
+            generate_summary_reports(all_results, output_dir, summary_formats)
 
     return _print_summary(
         all_results=all_results,
@@ -541,11 +545,15 @@ def _run_bot_audit(
 
         if "markdown" in formats:
             generate_markdown(cmp_result, output_dir)
-        if "html" in formats:
-            generate_html(cmp_result, output_dir)
+        # HTML is generated once as an interactive multi-profile dashboard.
 
     if all_results:
-        generate_summary_reports(all_results, output_dir, formats)
+        if "html" in formats:
+            generate_html_dashboard(all_results, output_dir)
+
+        summary_formats = [f for f in formats if f != "html"]
+        if summary_formats:
+            generate_summary_reports(all_results, output_dir, summary_formats)
 
     return _print_summary(
         all_results=all_results,

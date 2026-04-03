@@ -4,6 +4,7 @@ Report generation: Markdown and self-contained HTML output.
 from __future__ import annotations
 
 import html as _html_module
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -543,15 +544,11 @@ def _e(text) -> str:
     return _html_module.escape(str(text))
 
 
-def generate_html(result: ComparisonResult, output_dir: str) -> Path:
-    """Write a self-contained HTML audit report. Returns the file path."""
-    reports_dir = ensure_dir(Path(output_dir) / "reports")
-    safe_name = result.policy_name.replace('/', '_').replace(' ', '_')
-    is_bot = getattr(result, "profile_type", "waf") == "bot"
-    prefix = "BOT" if is_bot else "WAF"
-    out_path = reports_dir / f"{prefix}_{safe_name}_audit_report.html"
+def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = False) -> str:
+    """Build the HTML body fragment for one policy/profile report."""
 
     score = result.score
+    is_bot = getattr(result, "profile_type", "waf") == "bot"
     pass_fail = "PASS" if score >= _PASS_THRESHOLD else "FAIL"
     score_class = "score-pass" if score >= _PASS_THRESHOLD else "score-fail"
     badge_pf = f'<span class="badge badge-{pass_fail.lower()}">{pass_fail}</span>'
@@ -610,14 +607,18 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
     report_kind = "Bot Defense Profile" if is_bot else "WAF Policy"
     subject_label = "Profile" if is_bot else "Policy"
     baseline_label = "Baseline Profile" if is_bot else "Baseline Policy"
-    page_title = f"{'Bot Defense' if is_bot else 'WAF'} Audit: {_e(result.policy_path)}"
 
-    parts = [
-        "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>",
-        f"<title>{page_title}</title>",
-        _CSS,
-        "</head><body>",
-        f"<h1>{report_kind} Compliance Report for {_e(result.policy_path)} on {device_cell}</h1>",
+    parts = []
+    if embedded:
+        parts.append(
+            f"<h2>{report_kind} Compliance Report for {_e(result.policy_path)}</h2>"
+        )
+    else:
+        parts.append(
+            f"<h1>{report_kind} Compliance Report for {_e(result.policy_path)} on {device_cell}</h1>"
+        )
+
+    parts += [
         "<div class='meta'>",
         "<table>",
         f"<tr><td>Source Device</td><td>{device_cell}</td></tr>",
@@ -725,10 +726,144 @@ def generate_html(result: ComparisonResult, output_dir: str) -> Path:
             parts.append(f"<li>{_e(str(item))}</li>")
         parts.append("</ul></div></details>")
 
-    parts.append("</body></html>")
+    return "\n".join(parts)
 
-    out_path.write_text('\n'.join(parts), encoding='utf-8')
+
+def generate_html(result: ComparisonResult, output_dir: str) -> Path:
+    """Write a self-contained HTML audit report. Returns the file path."""
+    reports_dir = ensure_dir(Path(output_dir) / "reports")
+    safe_name = result.policy_name.replace('/', '_').replace(' ', '_')
+    is_bot = getattr(result, "profile_type", "waf") == "bot"
+    prefix = "BOT" if is_bot else "WAF"
+    out_path = reports_dir / f"{prefix}_{safe_name}_audit_report.html"
+
+    page_title = f"{'Bot Defense' if is_bot else 'WAF'} Audit: {_e(result.policy_path)}"
+    content = (
+        "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
+        f"<title>{page_title}</title>"
+        f"{_CSS}"
+        "</head><body>"
+        f"{_build_policy_report_fragment(result, embedded=False)}"
+        "</body></html>"
+    )
+
+    out_path.write_text(content, encoding='utf-8')
     _log.info("HTML report: %s", out_path)
+    return out_path
+
+
+def _safe_dom_id(text: str, index: int) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", text).strip("-").lower()
+    if not cleaned:
+        cleaned = "item"
+    return f"report-{index}-{cleaned}"
+
+
+def generate_html_dashboard(results: List[ComparisonResult], output_dir: str) -> Path:
+    """
+    Generate one interactive HTML report containing all audited policies/profiles.
+    Layout: title pane, left navigation pane, and main report pane.
+    """
+    reports_dir = ensure_dir(Path(output_dir) / "reports")
+    if not results:
+        raise ValueError("No comparison results provided for HTML dashboard generation")
+
+    is_bot = any(getattr(r, "profile_type", "waf") == "bot" for r in results)
+    subject_label = "Profiles" if is_bot else "Policies"
+    prefix = "BOT" if is_bot else "WAF"
+    out_path = reports_dir / f"{prefix}_audit_dashboard.html"
+
+    sorted_results = sorted(results, key=lambda r: r.policy_path.lower())
+
+    first = sorted_results[0]
+    if first.device_hostname and first.device_mgmt_ip:
+        device_line = (
+            f"<strong>{_e(first.device_hostname)}</strong>"
+            f" <span style='color:#d7deff'>({_e(first.device_mgmt_ip)})</span>"
+        )
+    elif first.device_hostname:
+        device_line = f"<strong>{_e(first.device_hostname)}</strong>"
+    elif first.device_mgmt_ip:
+        device_line = _e(first.device_mgmt_ip)
+    else:
+        device_line = "<em>unknown</em>"
+
+    nav_items = []
+    report_panels = []
+    for idx, result in enumerate(sorted_results):
+        dom_id = _safe_dom_id(result.policy_path, idx)
+        status = "PASS" if result.score >= _PASS_THRESHOLD else "FAIL"
+        nav_items.append(
+            f"<button class='nav-item{' active' if idx == 0 else ''}' "
+            f"data-target='{dom_id}' title='{_e(result.policy_path)}'>"
+            f"<span class='nav-name'>{_e(result.policy_path)}</span>"
+            f"<span class='badge badge-{'pass' if status == 'PASS' else 'fail'}'>{status}</span>"
+            f"</button>"
+        )
+        report_panels.append(
+            f"<section id='{dom_id}' class='report-panel{' active' if idx == 0 else ''}'>"
+            f"{_build_policy_report_fragment(result, embedded=True)}"
+            f"</section>"
+        )
+
+    dashboard_css = """
+<style>
+body{padding:0;margin:0;background:#eef1f6}
+.dashboard-grid{display:grid;grid-template-columns:320px 1fr;grid-template-rows:82px calc(100vh - 82px);height:100vh}
+.title-pane{grid-column:1 / 3;background:#16213e;color:#fff;padding:14px 18px;display:flex;flex-direction:column;justify-content:center;gap:6px;border-bottom:1px solid #22355f}
+.title-pane h1{margin:0;color:#fff;font-size:1.2rem}
+.title-sub{font-size:.9rem;color:#d7deff}
+.nav-pane{background:#fff;border-right:1px solid #d7dce8;overflow:auto;padding:10px}
+.nav-list{display:flex;flex-direction:column;gap:8px}
+.nav-item{width:100%;border:1px solid #d8deea;background:#f8faff;border-radius:6px;padding:10px;display:flex;justify-content:space-between;align-items:center;gap:8px;cursor:pointer;text-align:left}
+.nav-item:hover{background:#edf2ff}
+.nav-item.active{border-color:#3f63b8;background:#e8efff;box-shadow:inset 0 0 0 1px #3f63b8}
+.nav-name{display:block;font-family:monospace;font-size:.85rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.report-pane{overflow:auto;padding:16px}
+.report-panel{display:none}
+.report-panel.active{display:block}
+.report-panel h2{margin-top:0}
+</style>
+"""
+
+    content = (
+        "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
+        f"<title>{'Bot Defense' if is_bot else 'WAF'} Audit Dashboard</title>"
+        f"{_CSS}{dashboard_css}"
+        "</head><body>"
+        "<div class='dashboard-grid'>"
+        "<header class='title-pane'>"
+        f"<h1>{'Bot Defense' if is_bot else 'WAF'} Audit Dashboard</h1>"
+        f"<div class='title-sub'>Source Device: {device_line}</div>"
+        f"<div class='title-sub'>{len(sorted_results)} audited {subject_label.lower()}</div>"
+        "</header>"
+        "<aside class='nav-pane'>"
+        f"<h3 style='margin:4px 0 10px;color:#16213e'>{subject_label}</h3>"
+        "<div class='nav-list'>"
+        + "".join(nav_items) +
+        "</div></aside>"
+        "<main class='report-pane'>"
+        + "".join(report_panels) +
+        "</main></div>"
+        "<script>"
+        "(function(){"
+        "const buttons=document.querySelectorAll('.nav-item');"
+        "const panels=document.querySelectorAll('.report-panel');"
+        "buttons.forEach(btn=>btn.addEventListener('click',()=>{"
+        "const target=btn.getAttribute('data-target');"
+        "buttons.forEach(b=>b.classList.remove('active'));"
+        "panels.forEach(p=>p.classList.remove('active'));"
+        "btn.classList.add('active');"
+        "const panel=document.getElementById(target);"
+        "if(panel){panel.classList.add('active');window.scrollTo({top:0,behavior:'smooth'});}"
+        "}));"
+        "})();"
+        "</script>"
+        "</body></html>"
+    )
+
+    out_path.write_text(content, encoding='utf-8')
+    _log.info("HTML dashboard report: %s", out_path)
     return out_path
 
 
@@ -1505,6 +1640,285 @@ def _html_violations_table(violations: List[dict], baseline_violations: List[dic
             "<th>Matches Baseline</th><th>Baseline (A/B/L)</th>"
             "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
         )
+
+
+def _build_policy_report_fragment(result: ComparisonResult) -> str:
+    """Build the inner report HTML for a single policy/profile (no <html>/<body>)."""
+    score = result.score
+    pass_fail = "PASS" if score >= _PASS_THRESHOLD else "FAIL"
+    score_class = "score-pass" if score >= _PASS_THRESHOLD else "score-fail"
+    badge_pf = f'<span class="badge badge-{pass_fail.lower()}">{pass_fail}</span>'
+
+    is_bot = getattr(result, "profile_type", "waf") == "bot"
+
+    # Build virtual server rows for the meta table
+    vs_list = result.virtual_servers
+    if vs_list:
+        vs_rows = []
+        for vs in vs_list:
+            vs_name = _e(vs.get('fullPath', vs.get('name', '')))
+            vs_ip   = _e(vs.get('ip', '—'))
+            vs_port = _e(vs.get('port', '—'))
+            assoc   = _e(vs.get('association_type', 'direct'))
+            ltm_policies = vs.get("ltm_policies", [])
+            ltm_cell = (
+                ", ".join(f"<code>{_e(p.get('fullPath', p.get('name','')))}</code>"
+                          for p in ltm_policies)
+                if ltm_policies else "<em>none</em>"
+            )
+            vs_rows.append(
+                f"<tr>"
+                f"<td style='padding-left:20px'>&#8627; <code>{vs_name}</code></td>"
+                f"<td>{vs_ip}:{vs_port}</td>"
+                f"<td>{assoc}</td>"
+                f"<td>{ltm_cell}</td>"
+                f"</tr>"
+            )
+        vs_html = (
+            f"<tr><td>Virtual Server Bindings</td><td>"
+            f"<table style='width:100%;border-collapse:collapse'>"
+            f"<thead><tr>"
+            f"<th style='text-align:left;font-weight:normal;color:#555'>Name</th>"
+            f"<th style='text-align:left;font-weight:normal;color:#555'>IP:Port</th>"
+            f"<th style='text-align:left;font-weight:normal;color:#555'>Association</th>"
+            f"<th style='text-align:left;font-weight:normal;color:#555'>Local Traffic Policies</th>"
+            f"</tr></thead><tbody>"
+            + "".join(vs_rows) +
+            f"</tbody></table></td></tr>"
+        )
+    else:
+        vs_html = "<tr><td>Virtual Server Bindings</td><td><em>None found</em></td></tr>"
+
+    # Device identity cell
+    if result.device_hostname and result.device_mgmt_ip:
+        device_cell = (
+            f"<strong>{_e(result.device_hostname)}</strong>"
+            f"&nbsp;<span style='color:#555;font-size:.9em'>({_e(result.device_mgmt_ip)})</span>"
+        )
+    elif result.device_hostname:
+        device_cell = f"<strong>{_e(result.device_hostname)}</strong>"
+    elif result.device_mgmt_ip:
+        device_cell = _e(result.device_mgmt_ip)
+    else:
+        device_cell = "<em>unknown</em>"
+
+    report_kind = "Bot Defense Profile" if is_bot else "WAF Policy"
+    subject_label = "Profile" if is_bot else "Policy"
+    baseline_label = "Baseline Profile" if is_bot else "Baseline Policy"
+
+    parts = [
+        f"<h1>{report_kind} Compliance Report for {_e(result.policy_path)} on {device_cell}</h1>",
+        "<div class='meta'>",
+        "<table>",
+        f"<tr><td>Source Device</td><td>{device_cell}</td></tr>",
+        f"<tr><td>{subject_label}</td><td><code>{_e(result.policy_path)}</code></td></tr>",
+        f"<tr><td>Partition</td><td>{_e(result.partition)}</td></tr>",
+        f"<tr><td>Enforcement Mode</td><td>{_e(result.enforcement_mode)}</td></tr>",
+    ]
+    parts.append(vs_html)
+    parts += [
+        f"<tr><td>{baseline_label}</td><td>{_e(result.baseline_name)}</td></tr>",
+        f"<tr><td>Audit Date</td><td>{_e(result.timestamp)}</td></tr>",
+        f"<tr><td>Compliance Score</td><td><strong>{score:.1f}%</strong> {badge_pf}</td></tr>",
+        "</table>",
+        f"<div class='score-bar'><div class='{score_class} score-fill' style='width:{min(score,100):.1f}%'></div></div>",
+        "</div>",
+    ]
+
+    ltm_section = _html_ltm_policy_section(vs_list, is_bot=is_bot)
+    if ltm_section:
+        parts.append(ltm_section)
+
+    if not is_bot:
+        parts.append(_html_policy_builder_status(result))
+        parts.append(_html_signature_sets_table(result))
+
+        if result.violations:
+            parts.append(
+                "<details><summary><h2 style='display:inline;font-size:1em'>"
+                f"WAF Violations Status ({len(result.violations)})</h2></summary>"
+                "<div class='details-body'>"
+            )
+            parts.append(_html_violations_table(result.violations, result.baseline_violations))
+            parts.append("</div></details>")
+    else:
+        bot_mit = _html_bot_mitigation_table(result)
+        if bot_mit:
+            parts.append(bot_mit)
+        bot_sig = _html_bot_signature_enforcement_table(result)
+        if bot_sig:
+            parts.append(bot_sig)
+        bot_wl = _html_bot_whitelist_table(result)
+        if bot_wl:
+            parts.append(bot_wl)
+        bot_br = _html_bot_browsers_table(result)
+        if bot_br:
+            parts.append(bot_br)
+
+    parts.append("<h2>Executive Summary</h2>")
+    parts.append(_html_summary_table(result))
+
+    for sev_label, sev_key, badge_cls in [
+        ("Critical Findings", SEVERITY_CRITICAL, "critical"),
+        ("Warning Findings",  SEVERITY_WARNING,  "warning"),
+        ("Informational Findings", "info",      "info"),
+    ]:
+        items = [d for d in result.diffs if d.severity == sev_key]
+        if not items:
+            continue
+        parts.append(
+            f"<details open><summary>"
+            f"<span class='badge badge-{badge_cls}'>{sev_label}</span>"
+            f"&nbsp;({len(items)})</summary>"
+            f"<div class='details-body'>"
+        )
+        parts.append(_html_findings_table(items))
+        parts.append("</div></details>")
+
+    if not is_bot:
+        blocking_diffs = [d for d in result.diffs if d.section == "blocking"]
+        if blocking_diffs or result.violations:
+            n = len(blocking_diffs)
+            parts.append(
+                f"<details><summary><h2 style='display:inline;font-size:1em'>"
+                f"Blocking Section — Violations Comparison ({n} diff{'s' if n != 1 else ''})</h2>"
+                f"</summary><div class='details-body'>"
+                f"<p style='margin:8px 0'>Each violation's Alarm / Block / Learn flags compared against the baseline.</p>"
+            )
+            parts.append(_html_blocking_comparison_table(blocking_diffs, result.violations))
+            parts.append("</div></details>")
+
+    if result.extra_in_target:
+        parts.append("<details><summary>Extra Elements Not in Baseline "
+                     f"({len(result.extra_in_target)})</summary>"
+                     "<div class='details-body'><ul class='list-items'>")
+        for item in result.extra_in_target:
+            parts.append(f"<li>{_e(str(item))}</li>")
+        parts.append("</ul></div></details>")
+
+    if result.missing_in_target:
+        parts.append("<details><summary>Missing Elements From Baseline "
+                     f"({len(result.missing_in_target)})</summary>"
+                     "<div class='details-body'><ul class='list-items'>")
+        for item in result.missing_in_target:
+            parts.append(f"<li>{_e(str(item))}</li>")
+        parts.append("</ul></div></details>")
+
+    return ''.join(parts)
+
+
+def generate_html_dashboard(results: List[ComparisonResult], output_dir: str) -> Path:
+    """
+    Write a single interactive HTML dashboard containing all policy/profile reports.
+
+    Layout:
+      - Title pane (top): BIG-IP device info
+      - Navigation pane (left): selectable list of policies/profiles
+      - Main pane (right): selected policy/profile report
+    """
+    reports_dir = ensure_dir(Path(output_dir) / "reports")
+    sorted_results = sorted(results, key=lambda r: r.policy_path.lower())
+    is_bot = any(getattr(r, "profile_type", "waf") == "bot" for r in sorted_results)
+    prefix = "BOT" if is_bot else "WAF"
+    out_path = reports_dir / f"{prefix}_audit_dashboard.html"
+
+    dev_hostname = sorted_results[0].device_hostname if sorted_results else ""
+    dev_mgmt_ip = sorted_results[0].device_mgmt_ip if sorted_results else ""
+    if dev_hostname and dev_mgmt_ip:
+        device_line = f"<strong>{_e(dev_hostname)}</strong> <span style='color:#555'>({_e(dev_mgmt_ip)})</span>"
+    elif dev_hostname:
+        device_line = f"<strong>{_e(dev_hostname)}</strong>"
+    elif dev_mgmt_ip:
+        device_line = _e(dev_mgmt_ip)
+    else:
+        device_line = "<em>unknown</em>"
+
+    nav_items = []
+    panels = []
+    subject_label = "Profile" if is_bot else "Policy"
+    nav_title = "Bot Defense Profiles" if is_bot else "ASM Policies"
+
+    for idx, r in enumerate(sorted_results):
+        panel_id = f"report-{idx}"
+        status = "PASS" if r.score >= _PASS_THRESHOLD else "FAIL"
+        status_cls = "pass" if status == "PASS" else "fail"
+        nav_items.append(
+            f"<button class='nav-item{' active' if idx == 0 else ''}' data-target='{panel_id}'>"
+            f"<div class='nav-name'><code>{_e(r.policy_path)}</code></div>"
+            f"<div class='nav-meta'>{r.score:.1f}% <span class='badge badge-{status_cls}'>{status}</span></div>"
+            f"</button>"
+        )
+        panels.append(
+            f"<section id='{panel_id}' class='report-panel{' active' if idx == 0 else ''}'>"
+            f"{_build_policy_report_fragment(r)}"
+            f"</section>"
+        )
+
+    dashboard_css = """
+<style>
+body.dashboard{padding:0;margin:0;height:100vh;display:grid;grid-template-rows:auto 1fr;overflow:hidden}
+.title-pane{background:#16213e;color:#fff;padding:14px 18px;border-bottom:1px solid #0f3460}
+.title-pane h1{color:#fff;margin:0 0 6px;font-size:1.2rem}
+.title-meta{font-size:.9rem;display:flex;gap:24px;flex-wrap:wrap}
+.dashboard-body{min-height:0;display:grid;grid-template-columns:300px 1fr}
+.nav-pane{background:#fff;border-right:1px solid #d9dde5;padding:12px;overflow:auto}
+.nav-pane h2{margin:0 0 10px;border:0;padding:0;font-size:1rem}
+.nav-list{display:flex;flex-direction:column;gap:8px}
+.nav-item{width:100%;text-align:left;background:#f6f8fb;border:1px solid #dbe2ef;border-radius:6px;padding:10px;cursor:pointer}
+.nav-item:hover{background:#eef3ff}
+.nav-item.active{border-color:#1f4d99;background:#e8f0ff}
+.nav-item .nav-name{font-size:.86rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav-item .nav-meta{margin-top:6px;font-size:.84rem;color:#444;display:flex;justify-content:space-between;align-items:center}
+.main-pane{overflow:auto;padding:18px}
+.report-panel{display:none}
+.report-panel.active{display:block}
+.report-panel h1{font-size:1.3rem}
+</style>
+"""
+
+    dashboard_js = """
+<script>
+(function(){
+  const buttons = Array.from(document.querySelectorAll('.nav-item'));
+  const panels = Array.from(document.querySelectorAll('.report-panel'));
+  function activate(targetId){
+    buttons.forEach(b => b.classList.toggle('active', b.dataset.target === targetId));
+    panels.forEach(p => p.classList.toggle('active', p.id === targetId));
+  }
+  buttons.forEach(btn => btn.addEventListener('click', () => activate(btn.dataset.target)));
+})();
+</script>
+"""
+
+    report_title = "Bot Defense Audit Dashboard" if is_bot else "WAF Policy Audit Dashboard"
+    generated_ts = _e(sorted_results[0].timestamp) if sorted_results else ""
+
+    html_doc = (
+        "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
+        f"<title>{_e(report_title)}</title>"
+        + _CSS + dashboard_css +
+        "</head><body class='dashboard'>"
+        "<header class='title-pane'>"
+        f"<h1>{_e(report_title)}</h1>"
+        "<div class='title-meta'>"
+        f"<div><strong>Source BIG-IP:</strong> {device_line}</div>"
+        f"<div><strong>Total {subject_label}s:</strong> {len(sorted_results)}</div>"
+        f"<div><strong>Generated:</strong> {generated_ts}</div>"
+        "</div></header>"
+        "<div class='dashboard-body'>"
+        "<aside class='nav-pane'>"
+        f"<h2>{_e(nav_title)}</h2>"
+        f"<div class='nav-list'>{''.join(nav_items)}</div>"
+        "</aside>"
+        f"<main class='main-pane'>{''.join(panels)}</main>"
+        "</div>"
+        + dashboard_js +
+        "</body></html>"
+    )
+
+    out_path.write_text(html_doc, encoding='utf-8')
+    _log.info("HTML dashboard report: %s", out_path)
+    return out_path
 
 
 # ── Summary report ─────────────────────────────────────────────────────────────
