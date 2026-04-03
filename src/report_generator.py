@@ -85,6 +85,7 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
         _md_bot_signature_enforcement(lines, result)
         _md_bot_whitelist(lines, result)
         _md_bot_browsers(lines, result)
+        _md_bot_overrides(lines, result)
     _md_summary_table(lines, result)
     _md_findings(lines, result)
     if not is_bot:
@@ -1408,6 +1409,54 @@ def _html_bot_browsers_table(result: ComparisonResult) -> str:
     )
 
 
+def _html_bot_overrides_table(result: ComparisonResult) -> str:
+    """Render a collapsible Bot Defense Overrides table (HTML)."""
+    rows_data = result.bot_overrides
+    if not rows_data:
+        return ""
+
+    rows = []
+    for row in sorted(rows_data, key=lambda r: (r.get("collection", ""), r.get("name", ""))):
+        collection = _e(row.get("collection", ""))
+        name = _e(row.get("name", ""))
+        bm = row.get("baseline_match", "match")
+
+        if bm == "extra":
+            match_td = "<td class='match-diff'>&#9888; Added Override</td>"
+        elif bm == "missing":
+            match_td = "<td class='match-na'>Removed</td>"
+        elif bm == "diff":
+            match_td = "<td class='match-diff'>&#9888; Differs</td>"
+        else:
+            match_td = "<td class='match-ok'>&#10003; Match</td>"
+
+        rows.append(
+            f"<tr>"
+            f"<td>{collection}</td>"
+            f"<td><code>{name}</code></td>"
+            f"{match_td}"
+            f"</tr>"
+        )
+
+    n = len(rows_data)
+    body = (
+        "<p style='margin:8px 0'>"
+        "Override collections found in the target Bot Defense profile compared to baseline."
+        "</p>"
+        "<table class='findings'>"
+        "<thead><tr>"
+        "<th>Collection</th><th>Entry</th><th style='text-align:center'>Baseline Match</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows) +
+        "</tbody></table>"
+    )
+    return (
+        f"<h2>Bot Defense Overrides</h2>"
+        f"<details open><summary>Override Entry Inventory ({n})</summary>"
+        f"<div class='details-body'>{body}</div></details>"
+    )
+
+
 # ── Markdown Bot Defense helpers ────────────────────────────────────────────────
 
 def _md_bot_mitigation_settings(lines: List[str], result: ComparisonResult) -> None:
@@ -1519,6 +1568,27 @@ def _md_bot_browsers(lines: List[str], result: ComparisonResult) -> None:
         b_en = human_bool(b_e.get("enabled")) if b_e.get("enabled") is not None else "—"
         t_en = human_bool(t_e.get("enabled")) if t_e.get("enabled") is not None else "—"
         lines.append(f"| {row.get('name', '')} | {b_en} | {t_en} | {match_cell} |")
+    lines.append("")
+
+
+def _md_bot_overrides(lines: List[str], result: ComparisonResult) -> None:
+    """Render Bot Defense Overrides table (Markdown)."""
+    rows_data = result.bot_overrides
+    if not rows_data:
+        return
+
+    lines += [
+        "## Bot Defense Overrides",
+        "",
+        "Override collections found in the target profile and their comparison to baseline.",
+        "",
+        "| Collection | Entry | Baseline Match |",
+        "|------------|-------|----------------|",
+    ]
+    for row in sorted(rows_data, key=lambda r: (r.get("collection", ""), r.get("name", ""))):
+        bm = row.get("baseline_match", "match")
+        match_cell = {"extra": "⚠ Added Override", "missing": "Removed", "diff": "✗ Differs"}.get(bm, "✓ Match")
+        lines.append(f"| {row.get('collection', '')} | `{row.get('name', '')}` | {match_cell} |")
     lines.append("")
 
 
@@ -1642,7 +1712,7 @@ def _html_violations_table(violations: List[dict], baseline_violations: List[dic
         )
 
 
-def _build_policy_report_fragment(result: ComparisonResult) -> str:
+def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = False) -> str:
     """Build the inner report HTML for a single policy/profile (no <html>/<body>)."""
     score = result.score
     pass_fail = "PASS" if score >= _PASS_THRESHOLD else "FAIL"
@@ -1706,8 +1776,14 @@ def _build_policy_report_fragment(result: ComparisonResult) -> str:
     subject_label = "Profile" if is_bot else "Policy"
     baseline_label = "Baseline Profile" if is_bot else "Baseline Policy"
 
+    title_html = (
+        f"<h2>{report_kind} Compliance Report for {_e(result.policy_path)}</h2>"
+        if embedded else
+        f"<h1>{report_kind} Compliance Report for {_e(result.policy_path)} on {device_cell}</h1>"
+    )
+
     parts = [
-        f"<h1>{report_kind} Compliance Report for {_e(result.policy_path)} on {device_cell}</h1>",
+        title_html,
         "<div class='meta'>",
         "<table>",
         f"<tr><td>Source Device</td><td>{device_cell}</td></tr>",
@@ -1740,7 +1816,7 @@ def _build_policy_report_fragment(result: ComparisonResult) -> str:
                 "<div class='details-body'>"
             )
             parts.append(_html_violations_table(result.violations, result.baseline_violations))
-            parts.append("</div></details>")
+        # Bot Defense sections: Mitigation Settings, Signature Enforcement, Whitelist, Browsers, Overrides
     else:
         bot_mit = _html_bot_mitigation_table(result)
         if bot_mit:
@@ -1754,6 +1830,9 @@ def _build_policy_report_fragment(result: ComparisonResult) -> str:
         bot_br = _html_bot_browsers_table(result)
         if bot_br:
             parts.append(bot_br)
+        bot_ov = _html_bot_overrides_table(result)
+        if bot_ov:
+            parts.append(bot_ov)
 
     parts.append("<h2>Executive Summary</h2>")
     parts.append(_html_summary_table(result))

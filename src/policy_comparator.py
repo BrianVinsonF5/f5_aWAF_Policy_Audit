@@ -72,6 +72,7 @@ class ComparisonResult:
     bot_signatures:  List[Dict] = field(default_factory=list)
     bot_whitelist:   List[Dict] = field(default_factory=list)
     bot_browsers:    List[Dict] = field(default_factory=list)
+    bot_overrides:   List[Dict] = field(default_factory=list)
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────

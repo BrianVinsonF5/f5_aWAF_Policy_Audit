@@ -8,6 +8,7 @@ and a compliance score.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 from .policy_comparator import (
@@ -25,6 +26,40 @@ _TEMPLATE_RANK: Dict[str, int] = {
     "balanced": 1,
     "strict":   2,
 }
+
+# Bot Defense override collections to audit for additions/removals.
+_BD_OVERRIDE_COLLECTIONS = [
+    ("anomalyCategoryOverridesReference", "Anomaly Category Overrides"),
+    ("anomalyOverridesReference", "Anomaly Overrides"),
+    ("classOverridesReference", "Class Overrides"),
+    ("externalDomainsReference", "External Domains"),
+    ("microServicesReference", "Micro Services"),
+    ("signatureCategoryOverridesReference", "Signature Category Overrides"),
+    ("signatureOverridesReference", "Signature Overrides"),
+    ("siteDomainsReference", "Site Domains"),
+    ("stagedSignaturesReference", "Staged Signatures"),
+    ("whitelistReference", "Whitelist"),
+]
+
+_BD_META_FIELDS = {
+    "kind", "selfLink", "generation", "lastUpdateMicros",
+    "partition", "subPath", "appService", "fullPath",
+}
+
+# Override-related reference collections to compare and report.
+# Tuples: (reference_key, inline_key, display_label)
+_OVERRIDE_COLLECTIONS = [
+    ("anomalyCategoryOverridesReference", "anomalyCategoryOverrides", "Anomaly Category Overrides"),
+    ("anomalyOverridesReference", "anomalyOverrides", "Anomaly Overrides"),
+    ("classOverridesReference", "classOverrides", "Class Overrides"),
+    ("externalDomainsReference", "externalDomains", "External Domains"),
+    ("microServicesReference", "microServices", "Micro Services"),
+    ("signatureCategoryOverridesReference", "signatureCategoryOverrides", "Signature Category Overrides"),
+    ("signatureOverridesReference", "signatureOverrides", "Signature Overrides"),
+    ("siteDomainsReference", "siteDomains", "Site Domains"),
+    ("stagedSignaturesReference", "stagedSignatures", "Staged Signatures"),
+    ("whitelistReference", "whitelist", "Whitelist"),
+]
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -77,6 +112,8 @@ def compare_bot_profiles(
     _cmp_bd_signature_enforcement(baseline, target, result)
     _cmp_bd_whitelist(baseline, target, result)
     _cmp_bd_browsers(baseline, target, result)
+    _cmp_bd_overrides(baseline, target, result)
+    _cmp_bd_overrides(baseline, target, result)
 
     _build_summary(result)
     result.score = _calculate_score(result.diffs)
@@ -333,6 +370,164 @@ def _get_subcollection(profile: Dict, key: str) -> List[Dict]:
     if isinstance(inline, list):
         return inline
     return []
+
+
+def _get_ref_items(profile: Dict, ref_key: str) -> List[Dict]:
+    """Return items from a ``...Reference`` object, or an empty list."""
+    ref = profile.get(ref_key)
+    if isinstance(ref, dict):
+        items = ref.get("items")
+        if isinstance(items, list):
+            return items
+    return []
+
+
+def _sanitize_override_item(value: Any) -> Any:
+    """Drop noisy API metadata keys so override records are stable for compare."""
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for k, v in value.items():
+            if k in _BD_META_FIELDS:
+                continue
+            out[k] = _sanitize_override_item(v)
+        return out
+    if isinstance(value, list):
+        return [_sanitize_override_item(v) for v in value]
+    return value
+
+
+def _override_fingerprint(item: Any) -> str:
+    """Canonical fingerprint string for set-like override item comparison."""
+    cleaned = _sanitize_override_item(item)
+    try:
+        return json.dumps(cleaned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    except Exception:
+        return str(cleaned)
+
+
+def _override_display_name(item: Any) -> str:
+    """Human-friendly identifier for an override item."""
+    if isinstance(item, dict):
+        for key in (
+            "name", "id", "signatureId", "signatureName", "category",
+            "className", "domain", "host", "service", "uri", "value",
+        ):
+            val = item.get(key)
+            if val not in (None, ""):
+                return f"{key}={val}"
+        try:
+            txt = json.dumps(_sanitize_override_item(item), sort_keys=True, ensure_ascii=False)
+            return txt if len(txt) <= 120 else txt[:117] + "..."
+        except Exception:
+            return str(item)
+    return str(item)
+
+
+def _cmp_bd_overrides(
+    baseline: Dict, target: Dict, result: ComparisonResult
+) -> None:
+    """
+    Compare Bot Defense override collections.
+
+    Baselines are expected to have no overrides. Any override item present in
+    the target and missing in baseline is recorded and reported.
+    """
+    rows: List[Dict[str, Any]] = []
+
+    for ref_key, label in _BD_OVERRIDE_COLLECTIONS:
+        b_items = _get_ref_items(baseline, ref_key)
+        t_items = _get_ref_items(target, ref_key)
+
+        b_map = {_override_fingerprint(item): item for item in b_items}
+        t_map = {_override_fingerprint(item): item for item in t_items}
+        all_fps = sorted(set(b_map) | set(t_map))
+
+        for fp in all_fps:
+            b_item = b_map.get(fp)
+            t_item = t_map.get(fp)
+
+            if b_item is None and t_item is not None:
+                name = _override_display_name(t_item)
+                rows.append({
+                    "collection": label,
+                    "name": name,
+                    "baseline_entry": None,
+                    "target_entry": t_item,
+                    "baseline_match": "extra",
+                })
+                _add(result, DiffItem(
+                    section="bot-defense.overrides",
+                    element_name=f"{label}: {name}",
+                    attribute="present",
+                    baseline_value=False,
+                    target_value=True,
+                    severity=SEVERITY_WARNING,
+                    description=(
+                        f"Bot Defense override added in '{label}': {name}. "
+                        "Baseline has no matching override entry."
+                    ),
+                ))
+                continue
+
+            if b_item is not None and t_item is None:
+                name = _override_display_name(b_item)
+                rows.append({
+                    "collection": label,
+                    "name": name,
+                    "baseline_entry": b_item,
+                    "target_entry": None,
+                    "baseline_match": "missing",
+                })
+                _add(result, DiffItem(
+                    section="bot-defense.overrides",
+                    element_name=f"{label}: {name}",
+                    attribute="present",
+                    baseline_value=True,
+                    target_value=False,
+                    severity=SEVERITY_INFO,
+                    description=f"Bot Defense override removed from '{label}': {name}.",
+                ))
+                continue
+
+            # Present in both baseline and target.
+            rows.append({
+                "collection": label,
+                "name": _override_display_name(t_item),
+                "baseline_entry": b_item,
+                "target_entry": t_item,
+                "baseline_match": "match",
+            })
+
+    result.bot_overrides = rows
+
+
+def _get_reference_subcollection(profile: Dict, ref_key: str, inline_key: str) -> List[Dict]:
+    """Return items from a specific ``...Reference`` key with inline fallback."""
+    ref = profile.get(ref_key, {})
+    if isinstance(ref, dict) and isinstance(ref.get("items"), list):
+        return ref.get("items", [])
+    inline = profile.get(inline_key, [])
+    if isinstance(inline, list):
+        return inline
+    return []
+
+
+def _override_entry_key(entry: Dict) -> str:
+    """Derive a stable display/comparison key for Bot Defense override entries."""
+    for k in (
+        "id", "name", "fullPath", "signatureId", "signatureName",
+        "category", "className", "serviceName", "domain", "host",
+        "ipAddress", "ip", "value",
+    ):
+        v = entry.get(k)
+        if v not in (None, ""):
+            return str(v)
+    # Deterministic fallback for entries without an obvious identity field.
+    try:
+        import json
+        return json.dumps(entry, sort_keys=True)
+    except Exception:
+        return str(entry)
 
 
 def _cmp_bd_signature_enforcement(
@@ -674,3 +869,113 @@ def _cmp_bd_browsers(
         })
 
     result.bot_browsers = display_rows
+
+
+def _cmp_bd_overrides(
+    baseline: Dict, target: Dict, result: ComparisonResult
+) -> None:
+    """
+    Compare override-oriented Bot Defense collections.
+
+    The baseline profile is expected to contain no override entries. Any
+    override entries found in target are recorded in ``result.bot_overrides``
+    and flagged as WARNING differences.
+    """
+    display_rows: List[Dict] = []
+
+    for ref_key, inline_key, label in _OVERRIDE_COLLECTIONS:
+        b_items = _get_reference_subcollection(baseline, ref_key, inline_key)
+        t_items = _get_reference_subcollection(target, ref_key, inline_key)
+
+        b_map = {
+            _override_entry_key(e): e
+            for e in b_items if isinstance(e, dict)
+        }
+        t_map = {
+            _override_entry_key(e): e
+            for e in t_items if isinstance(e, dict)
+        }
+
+        all_keys = sorted(set(b_map) | set(t_map))
+        for key in all_keys:
+            b_entry = b_map.get(key)
+            t_entry = t_map.get(key)
+
+            if b_entry is None:
+                display_rows.append({
+                    "collection": label,
+                    "name": key,
+                    "baseline_entry": None,
+                    "target_entry": t_entry,
+                    "baseline_match": "extra",
+                })
+                _add(result, DiffItem(
+                    section=f"bot-defense.overrides.{inline_key}",
+                    element_name=key,
+                    attribute="present",
+                    baseline_value=False,
+                    target_value=True,
+                    severity=SEVERITY_WARNING,
+                    description=(
+                        f"Override entry '{key}' was added in '{label}' on target profile."
+                    ),
+                ))
+                result.extra_in_target.append(
+                    {"section": f"bot-defense.overrides.{inline_key}", "name": key}
+                )
+                continue
+
+            if t_entry is None:
+                display_rows.append({
+                    "collection": label,
+                    "name": key,
+                    "baseline_entry": b_entry,
+                    "target_entry": None,
+                    "baseline_match": "missing",
+                })
+                _add(result, DiffItem(
+                    section=f"bot-defense.overrides.{inline_key}",
+                    element_name=key,
+                    attribute="present",
+                    baseline_value=True,
+                    target_value=False,
+                    severity=SEVERITY_INFO,
+                    description=(
+                        f"Override entry '{key}' from baseline '{label}' is missing on target."
+                    ),
+                ))
+                result.missing_in_target.append(
+                    {"section": f"bot-defense.overrides.{inline_key}", "name": key}
+                )
+                continue
+
+            # Both present — detect content drift.
+            if b_entry != t_entry:
+                display_rows.append({
+                    "collection": label,
+                    "name": key,
+                    "baseline_entry": b_entry,
+                    "target_entry": t_entry,
+                    "baseline_match": "diff",
+                })
+                _add(result, DiffItem(
+                    section=f"bot-defense.overrides.{inline_key}",
+                    element_name=key,
+                    attribute="content",
+                    baseline_value=b_entry,
+                    target_value=t_entry,
+                    severity=SEVERITY_WARNING,
+                    description=(
+                        f"Override entry '{key}' in '{label}' differs from baseline."
+                    ),
+                ))
+            else:
+                display_rows.append({
+                    "collection": label,
+                    "name": key,
+                    "baseline_entry": b_entry,
+                    "target_entry": t_entry,
+                    "baseline_match": "match",
+                })
+
+    result.bot_overrides = display_rows
