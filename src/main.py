@@ -407,7 +407,7 @@ def _run_waf_audit(
     all_results = []
     total = len(successes)
     iterable = (
-        tqdm(successes, desc="Auditing policies", unit="policy")
+        _tqdm(successes, desc="Auditing policies", unit="policy")
         if _HAS_TQDM
         else successes
     )
@@ -514,7 +514,7 @@ def _run_bot_audit(
     all_results = []
     total = len(successes)
     iterable = (
-        tqdm(successes, desc="Auditing Bot Defense profiles", unit="profile")
+        _tqdm(successes, desc="Auditing Bot Defense profiles", unit="profile")
         if _HAS_TQDM
         else successes
     )

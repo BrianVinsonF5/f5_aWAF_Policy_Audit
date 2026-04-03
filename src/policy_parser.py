@@ -573,8 +573,9 @@ def _parse_pb_subsections(root) -> Dict:
 
 
 def _parse_policy_builder(root) -> Dict:
-    # Try underscore variant (real AWAF exports) then hyphen
-    pb = _find(root, "policy_builder") or _find(root, "policy-builder")
+    pb = _find(root, "policy_builder")
+    if pb is None:
+        pb = _find(root, "policy-builder")
     if pb is None:
         return {}
 
