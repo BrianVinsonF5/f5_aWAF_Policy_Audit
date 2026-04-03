@@ -1,4 +1,4 @@
-Bot Defense profile comparison engine.
+"""Bot Defense profile comparison engine.
 
 Compares a target Bot Defense profile (fetched from the BIG-IP REST API
 at /mgmt/tm/security/bot-defense/profile) against a baseline profile dict
