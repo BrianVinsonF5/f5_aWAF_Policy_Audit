@@ -28,12 +28,6 @@ from .bot_defense_auditor import BotDefenseAuditor
 from .bot_defense_comparator import compare_bot_profiles
 from .report_generator import generate_html_dashboard, generate_markdown, generate_summary_reports
 
-try:
-    from tqdm import tqdm as _tqdm
-    _HAS_TQDM = True
-except ImportError:
-    _HAS_TQDM = False
-
 import urllib3
 
 
@@ -446,11 +440,7 @@ def _run_waf_audit(
     # Compare and report
     all_results = []
     total = len(successes)
-    iterable = (
-        _tqdm(successes, desc="Auditing policies", unit="policy")
-        if _HAS_TQDM
-        else successes
-    )
+    iterable = successes
 
     for idx, policy in enumerate(iterable, 1):
         local_path = policy.get("local_path")
@@ -560,11 +550,7 @@ def _run_bot_audit(
     # Compare and report
     all_results = []
     total = len(successes)
-    iterable = (
-        _tqdm(successes, desc="Auditing Bot Defense profiles", unit="profile")
-        if _HAS_TQDM
-        else successes
-    )
+    iterable = successes
 
     for idx, (profile_meta, profile_data) in enumerate(iterable, 1):
         logger.info(
