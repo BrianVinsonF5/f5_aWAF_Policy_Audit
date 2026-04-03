@@ -73,6 +73,10 @@ class ComparisonResult:
     bot_whitelist:   List[Dict] = field(default_factory=list)
     bot_browsers:    List[Dict] = field(default_factory=list)
     bot_overrides:   List[Dict] = field(default_factory=list)
+    # Recent ASM policy change history (from /audit-logs)
+    policy_audit_logs: List[Dict] = field(default_factory=list)
+    # Recent ASM security policy change history (from /audit-logs)
+    asm_audit_logs: List[Dict] = field(default_factory=list)
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -85,6 +89,8 @@ def compare_policies(
     virtual_servers: Optional[List[Dict]] = None,
     device_hostname: str = "",
     device_mgmt_ip:  str = "",
+    policy_audit_logs: Optional[List[Dict]] = None,
+    asm_audit_logs: Optional[List[Dict]] = None,
 ) -> ComparisonResult:
     """
     Compare a target policy dict against a baseline policy dict.
@@ -93,6 +99,8 @@ def compare_policies(
     policy_meta is the result of policy_parser.get_policy_metadata() for target.
     virtual_servers is a list of dicts produced by PolicyExporter.enrich_with_virtual_servers().
     device_hostname / device_mgmt_ip identify the BIG-IP the policy was exported from.
+    policy_audit_logs is a list of recent policy change entries from
+    /mgmt/tm/asm/policies/<id>/audit-logs.
     """
     meta = policy_meta or {}
     result = ComparisonResult(
@@ -104,7 +112,9 @@ def compare_policies(
         timestamp=iso_timestamp(),
         virtual_servers=virtual_servers or [],
         device_hostname=device_hostname,
+        policy_audit_logs=policy_audit_logs or [],
         device_mgmt_ip=device_mgmt_ip,
+        asm_audit_logs=asm_audit_logs or [],
     )
 
     # Run each section comparator

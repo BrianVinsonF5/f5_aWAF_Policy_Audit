@@ -6,7 +6,7 @@ from __future__ import annotations
 import html as _html_module
 import re
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from .policy_comparator import ComparisonResult, DiffItem, SEVERITY_CRITICAL, SEVERITY_WARNING
 from .utils import get_logger, ensure_dir, human_bool
@@ -77,6 +77,7 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
     lines: List[str] = []
     _md_header(lines, result)
     if not is_bot:
+        _md_asm_policy_changes(lines, result)
         _md_signature_sets_table(lines, result)
         _md_policy_builder_status(lines, result)
         _md_violations_table(lines, result)
@@ -185,6 +186,80 @@ def _md_header(lines: List[str], result: ComparisonResult) -> None:
             "*No virtual server bindings found for this policy.*",
             "",
         ]
+
+
+def _audit_log_field(entry: Dict, keys: List[str], default: str = "—") -> str:
+    """Return the first non-empty string-like value for any of ``keys``."""
+    for key in keys:
+        val = entry.get(key)
+        if val is None:
+            continue
+        sval = str(val).strip()
+        if sval:
+            return sval
+    return default
+
+
+def _normalize_audit_log_entry(entry: Dict) -> Dict[str, str]:
+    """Extract normalized timestamp/user/message fields from an audit log dict."""
+    when = _audit_log_field(
+        entry,
+        [
+            "eventTimestamp",
+            "timestamp",
+            "time",
+            "dateTime",
+            "createdTime",
+            "date",
+        ],
+    )
+    who = _audit_log_field(
+        entry,
+        ["userName", "username", "user", "actor", "modifiedBy", "createdBy"],
+    )
+    what = _audit_log_field(
+        entry,
+        ["message", "description", "details", "action", "change", "summary"],
+    )
+    return {"when": when, "who": who, "what": what}
+
+
+def _get_recent_asm_changes(result: ComparisonResult) -> List[Dict]:
+    """Return normalized ASM audit log entries for report rendering."""
+    raw = result.asm_audit_logs or result.policy_audit_logs or []
+    out: List[Dict] = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            out.append(_normalize_audit_log_entry(entry))
+    return out
+
+
+def _md_asm_policy_changes(lines: List[str], result: ComparisonResult) -> None:
+    """Render recent ASM security policy changes in Markdown."""
+    changes = _get_recent_asm_changes(result)
+    lines += [
+        "## Recent ASM Security Policy Changes",
+        "",
+        "Last 10 policy audit-log entries from BIG-IP `/mgmt/tm/asm/policies/<id>/audit-logs`.",
+        "",
+    ]
+
+    if not changes:
+        lines += [
+            "*No policy audit-log entries were returned for this policy.*",
+            "",
+        ]
+        return
+
+    lines += [
+        "| # | Timestamp | User | Change |",
+        "|---:|-----------|------|--------|",
+    ]
+    for idx, change in enumerate(changes[:10], 1):
+        lines.append(
+            f"| {idx} | {change['when']} | {change['who']} | {change['what']} |"
+        )
+    lines.append("")
 
 
 def _md_signature_sets_table(lines: List[str], result: ComparisonResult) -> None:
@@ -1160,6 +1235,44 @@ def _html_findings_table(diffs: List[DiffItem]) -> str:
     )
 
 
+def _html_asm_policy_changes(result: ComparisonResult) -> str:
+    """Render recent ASM security policy changes as a collapsible HTML table."""
+    changes = _get_recent_asm_changes(result)
+
+    if not changes:
+        body = (
+            "<p style='margin:8px 0'>"
+            "No policy audit-log entries were returned for this policy."
+            "</p>"
+        )
+    else:
+        rows = []
+        for idx, change in enumerate(changes[:10], 1):
+            rows.append(
+                "<tr>"
+                f"<td style='text-align:center'>{idx}</td>"
+                f"<td>{_e(change['when'])}</td>"
+                f"<td>{_e(change['who'])}</td>"
+                f"<td>{_e(change['what'])}</td>"
+                "</tr>"
+            )
+        body = (
+            "<table class='findings'>"
+            "<thead><tr>"
+            "<th style='text-align:center'>#</th>"
+            "<th>Timestamp</th><th>User</th><th>Change</th>"
+            "</tr></thead><tbody>"
+            + "".join(rows) +
+            "</tbody></table>"
+        )
+
+    return (
+        "<h2>Recent ASM Security Policy Changes</h2>"
+        "<details open><summary>Policy Audit Log (last 10 entries)</summary>"
+        f"<div class='details-body'>{body}</div></details>"
+    )
+
+
 # ── Bot Defense dedicated display helpers ──────────────────────────────────────
 
 # Settings shown in the Bot Mitigation Settings table, in display order.
@@ -1808,6 +1921,7 @@ def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = Fal
     if not is_bot:
         parts.append(_html_policy_builder_status(result))
         parts.append(_html_signature_sets_table(result))
+        parts.append(_html_asm_policy_changes(result))
 
         if result.violations:
             parts.append(
@@ -1816,6 +1930,7 @@ def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = Fal
                 "<div class='details-body'>"
             )
             parts.append(_html_violations_table(result.violations, result.baseline_violations))
+            parts.append("</div></details>")
         # Bot Defense sections: Mitigation Settings, Signature Enforcement, Whitelist, Browsers, Overrides
     else:
         bot_mit = _html_bot_mitigation_table(result)

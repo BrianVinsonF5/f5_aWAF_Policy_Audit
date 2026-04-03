@@ -15,7 +15,7 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -152,6 +152,48 @@ def _load_json_baseline(path: str) -> Optional[dict]:
     except OSError as exc:
         print(f"ERROR: Cannot read baseline file '{path}': {exc}", file=sys.stderr)
         return None
+
+
+def _fetch_recent_policy_audit_logs(
+    client,
+    policy_id: str,
+    logger,
+    limit: int = 10,
+) -> List[Dict]:
+    """
+    Fetch recent ASM policy audit log entries for a policy.
+
+    Endpoint:
+      /mgmt/tm/asm/policies/<policy-id>/audit-logs
+
+    Returns up to ``limit`` entries (best effort). Any API failure is logged and
+    results in an empty list so auditing can continue.
+    """
+    if not policy_id:
+        return []
+
+    path = f"/mgmt/tm/asm/policies/{policy_id}/audit-logs"
+    try:
+        payload = client.get(path)
+    except Exception as exc:
+        logger.warning(
+            "Could not fetch audit log history for policy id=%s: %s",
+            policy_id,
+            exc,
+        )
+        return []
+
+    if isinstance(payload, dict):
+        items = payload.get("items") or payload.get("entries") or []
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        items = []
+
+    if not isinstance(items, list):
+        return []
+
+    return [entry for entry in items if isinstance(entry, dict)][:limit]
 
 
 # ── Main workflow ──────────────────────────────────────────────────────────────
@@ -392,8 +434,6 @@ def _run_waf_audit(
         client.close()
         return 1
 
-    client.close()
-
     # Parse baseline
     logger.info("Parsing baseline policy: %s", baseline)
     try:
@@ -439,6 +479,12 @@ def _run_waf_audit(
             virtual_servers=policy.get("virtual_servers", []),
             device_hostname=device_hostname,
             device_mgmt_ip=device_mgmt_ip,
+            asm_audit_logs=_fetch_recent_policy_audit_logs(
+                client=client,
+                policy_id=policy.get("id", ""),
+                logger=logger,
+                limit=10,
+            ),
         )
         all_results.append(cmp_result)
 
@@ -454,6 +500,7 @@ def _run_waf_audit(
         if summary_formats:
             generate_summary_reports(all_results, output_dir, summary_formats)
 
+    client.close()
     return _print_summary(
         all_results=all_results,
         failures=failures,
