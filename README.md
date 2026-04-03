@@ -62,6 +62,7 @@ module to be licensed and provisioned.
 
 - Discovers all Bot Defense profiles via `GET /mgmt/tm/security/bot-defense/profile`
 - Fetches the full profile JSON for each discovered profile
+- Expands referenced sub-collections (signatures, whitelist, overrides, etc.) for richer comparison coverage
 - Saves each profile JSON to `output/bot-defense/` for the audit trail
 - Compares the fetched profile against a baseline JSON file
 - Baseline file must be a JSON export of a Bot Defense profile (see below)
@@ -179,9 +180,11 @@ These flags are mutually exclusive. If neither is supplied, `--WAF` is the defau
 |----------|---------|---------|-------------|
 | `--host` | `BIGIP_HOST` | required | BIG-IP management IP or FQDN |
 | `--username` | `BIGIP_USER` | required | Admin username |
-| `--password` | `BIGIP_PASS` | (prompt) | Password (env var or interactive prompt only — not accepted in config file) |
 | `--login-provider` | `BIGIP_LOGIN_PROVIDER` | `tmos` | BIG-IP login provider (RADIUS/LDAP users may need to change this) |
 | `--verify-ssl` / `--no-verify-ssl` | `VERIFY_SSL` | `true` | TLS certificate verification |
+
+> Password input is intentionally **not** exposed as a CLI argument. Use `BIGIP_PASS`
+> or the interactive prompt.
 
 ### Audit Options
 
@@ -189,7 +192,7 @@ These flags are mutually exclusive. If neither is supplied, `--WAF` is the defau
 |----------|---------|---------|-------------|
 | `--baseline` | `BASELINE_POLICY` | required | Path to baseline file (XML for `--WAF`, JSON for `--BOT`) |
 | `--output-dir` | `OUTPUT_DIR` | `./output` | Output directory for exports and reports |
-| `--format` | `REPORT_FORMAT` | `both` | `html`, `markdown`, or `both` |
+| `--format` | `REPORT_FORMAT` | `both` | `html` = single interactive dashboard, `markdown` = per-policy/profile reports + summary, `both` = dashboard + markdown reports |
 | `--partitions` | `PARTITIONS` | (all) | Comma-separated partition list to audit |
 | `--export-format` | `EXPORT_FORMAT` | `xml` | WAF policy export format: `xml` or `json` |
 | `--concurrent-exports` | `CONCURRENT_EXPORTS` | `3` | Max parallel WAF export tasks (1–20) |
@@ -214,12 +217,10 @@ output/
 │   ├── Common_app1_waf_20260303T1430.xml
 │   └── Common_app2_waf_20260303T1431.xml
 └── reports/
-    ├── app1_waf_audit_report.md       # Per-policy Markdown report
-    ├── app1_waf_audit_report.html     # Per-policy HTML report (self-contained)
-    ├── app2_waf_audit_report.md
-    ├── app2_waf_audit_report.html
-    ├── summary_audit_report.md        # Cross-policy summary
-    └── summary_audit_report.html
+    ├── WAF_audit_dashboard.html        # Single interactive multi-policy HTML dashboard
+    ├── WAF_app1_waf_audit_report.md    # Per-policy Markdown report
+    ├── WAF_app2_waf_audit_report.md
+    └── WAF_summary_audit_report.md     # Cross-policy summary (Markdown)
 ```
 
 **Bot Defense mode:**
@@ -231,11 +232,15 @@ output/
 │   ├── Common_my_bot_profile.json     # Raw profile JSON (audit trail)
 │   └── App1_strict_bot.json
 └── reports/
-    ├── my_bot_profile_audit_report.md
-    ├── my_bot_profile_audit_report.html
-    ├── summary_audit_report.md
-    └── summary_audit_report.html
+    ├── BOT_audit_dashboard.html        # Single interactive multi-profile HTML dashboard
+    ├── BOT_my_bot_profile_audit_report.md
+    ├── BOT_strict_bot_audit_report.md
+    └── BOT_summary_audit_report.md
 ```
+
+Notes:
+- HTML output is generated as one interactive dashboard file per run (`WAF_audit_dashboard.html` or `BOT_audit_dashboard.html`).
+- Markdown output is generated per policy/profile, plus a summary Markdown report.
 
 ---
 
@@ -320,7 +325,7 @@ src/
 ├── policy_comparator.py     # WAF diff engine → ComparisonResult + DiffItem dataclasses
 ├── bot_defense_auditor.py   # Bot Defense profile discovery + REST fetch workflow
 ├── bot_defense_comparator.py # Bot Defense diff engine (JSON profile comparison)
-├── report_generator.py      # Markdown + self-contained HTML reports (shared by both modes)
+├── report_generator.py      # Markdown reports + interactive HTML dashboard + summary reports
 └── utils.py                 # Logging, retry decorator, filename helpers
 ```
 
