@@ -15,7 +15,7 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -28,6 +28,7 @@ from .bot_defense_auditor import BotDefenseAuditor
 from .bot_defense_comparator import compare_bot_profiles
 from .report_generator import generate_html, generate_markdown, generate_summary_reports
 
+from .report_generator import generate_html_dashboard, generate_markdown, generate_summary_reports
 
 import urllib3
 
@@ -147,6 +148,48 @@ def _load_json_baseline(path: str) -> Optional[dict]:
     except OSError as exc:
         print(f"ERROR: Cannot read baseline file '{path}': {exc}", file=sys.stderr)
         return None
+
+
+def _fetch_recent_policy_audit_logs(
+    client,
+    policy_id: str,
+    logger,
+    limit: int = 10,
+) -> List[Dict]:
+    """
+    Fetch recent ASM policy audit log entries for a policy.
+
+    Endpoint:
+      /mgmt/tm/asm/policies/<policy-id>/audit-logs
+
+    Returns up to ``limit`` entries (best effort). Any API failure is logged and
+    results in an empty list so auditing can continue.
+    """
+    if not policy_id:
+        return []
+
+    path = f"/mgmt/tm/asm/policies/{policy_id}/audit-logs"
+    try:
+        payload = client.get(path)
+    except Exception as exc:
+        logger.warning(
+            "Could not fetch audit log history for policy id=%s: %s",
+            policy_id,
+            exc,
+        )
+        return []
+
+    if isinstance(payload, dict):
+        items = payload.get("items") or payload.get("entries") or []
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        items = []
+
+    if not isinstance(items, list):
+        return []
+
+    return [entry for entry in items if isinstance(entry, dict)][:limit]
 
 
 # ── Main workflow ──────────────────────────────────────────────────────────────
@@ -387,8 +430,6 @@ def _run_waf_audit(
         client.close()
         return 1
 
-    client.close()
-
     # Parse baseline
     logger.info("Parsing baseline policy: %s", baseline)
     try:
@@ -401,6 +442,7 @@ def _run_waf_audit(
     # Compare and report
     all_results = []
     total = len(successes)
+    iterable = successes
 
     for idx, policy in enumerate(successes, 1):
         local_path = policy.get("local_path")
@@ -429,17 +471,28 @@ def _run_waf_audit(
             virtual_servers=policy.get("virtual_servers", []),
             device_hostname=device_hostname,
             device_mgmt_ip=device_mgmt_ip,
+            asm_audit_logs=_fetch_recent_policy_audit_logs(
+                client=client,
+                policy_id=policy.get("id", ""),
+                logger=logger,
+                limit=10,
+            ),
         )
         all_results.append(cmp_result)
 
         if "markdown" in formats:
             generate_markdown(cmp_result, output_dir)
-        if "html" in formats:
-            generate_html(cmp_result, output_dir)
+        # HTML is generated once as an interactive multi-policy dashboard.
 
     if all_results:
-        generate_summary_reports(all_results, output_dir, formats)
+        if "html" in formats:
+            generate_html_dashboard(all_results, output_dir)
 
+        summary_formats = [f for f in formats if f != "html"]
+        if summary_formats:
+            generate_summary_reports(all_results, output_dir, summary_formats)
+
+    client.close()
     return _print_summary(
         all_results=all_results,
         failures=failures,
@@ -499,6 +552,7 @@ def _run_bot_audit(
     # Compare and report
     all_results = []
     total = len(successes)
+    iterable = successes
 
     for idx, (profile_meta, profile_data) in enumerate(successes, 1):
         logger.info(
@@ -526,11 +580,15 @@ def _run_bot_audit(
 
         if "markdown" in formats:
             generate_markdown(cmp_result, output_dir)
-        if "html" in formats:
-            generate_html(cmp_result, output_dir)
+        # HTML is generated once as an interactive multi-profile dashboard.
 
     if all_results:
-        generate_summary_reports(all_results, output_dir, formats)
+        if "html" in formats:
+            generate_html_dashboard(all_results, output_dir)
+
+        summary_formats = [f for f in formats if f != "html"]
+        if summary_formats:
+            generate_summary_reports(all_results, output_dir, summary_formats)
 
     return _print_summary(
         all_results=all_results,
