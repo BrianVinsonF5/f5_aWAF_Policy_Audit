@@ -41,7 +41,10 @@ _PASS_THRESHOLD = 90.0
 def _load_config(path: Optional[str]) -> dict:
     if path and Path(path).exists():
         with open(path, encoding='utf-8') as fh:
-            return yaml.safe_load(fh) or {}
+            if Path(path).suffix == ".yaml":
+                return yaml.safe_load(fh) or {}
+            elif Path(path).suffix == ".json":
+                return json.load(fh) or {}
     return {}
 
 
