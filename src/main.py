@@ -2,11 +2,19 @@
 CLI entry point for the F5 BIG-IP ASM/AWAF Security Policy Auditor.
 
 Usage:
+
+
+
+Monthly CSM Sync
     # Audit WAF (ASM/AWAF) policies (default):
     python -m src.main --WAF --host 192.168.1.245 --username admin --baseline ./baseline/corp.xml
 
     # Audit Bot Defense profiles:
-    python -m src.main --BOT --host 192.168.1.245 --username admin --baseline ./baseline/bot.json
+    python -m src.main --BOT --host 192.168.1.245 --username admin --baseli
+    
+    
+    
+    Monthly CSM Syncne ./baseline/bot.json
 """
 import argparse
 import getpass
@@ -27,6 +35,7 @@ from .policy_comparator import compare_policies
 from .bot_defense_auditor import BotDefenseAuditor
 from .bot_defense_comparator import compare_bot_profiles
 from .report_generator import generate_html_dashboard, generate_markdown, generate_summary_reports
+from .gitlab_state import GitLabStateManager
 
 import urllib3
 
@@ -115,6 +124,25 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--concurrent-exports", dest="concurrent_exports",
                    type=int, default=None, metavar="N",
                    help="Max parallel export tasks, 1–20 (default: 3)")
+    p.add_argument("--gitlab-repo-url", dest="gitlab_repo_url", metavar="URL",
+                   default=None,
+                   help="GitLab repo URL used as source-of-truth + run archive")
+    p.add_argument("--gitlab-local-dir", dest="gitlab_local_dir", metavar="DIR",
+                   default=None,
+                   help="Local clone path for the GitLab policy-state repository")
+    p.add_argument("--gitlab-branch", dest="gitlab_branch", metavar="BRANCH",
+                   default=None,
+                   help="Git branch for the policy-state repository (default: main)")
+    p.add_argument("--gitlab-auto-push", dest="gitlab_auto_push", action="store_true",
+                   default=None,
+                   help="Push policy-state commits to remote automatically")
+    p.add_argument("--no-gitlab-auto-push", dest="gitlab_auto_push", action="store_false",
+                   help="Do not push commits to remote automatically")
+    p.add_argument("--gitlab-update-source-truth", dest="gitlab_update_source_truth", action="store_true",
+                   default=None,
+                   help="Update source_of_truth files in the GitLab repo from current device exports")
+    p.add_argument("--no-gitlab-update-source-truth", dest="gitlab_update_source_truth", action="store_false",
+                   help="Do not update source_of_truth files from current exports")
     p.add_argument("-v", "--verbose", action="store_true", default=False,
                    help="Enable debug logging")
     return p
@@ -204,6 +232,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     raw_cfg = _load_config(config_path)
     bigip_cfg = raw_cfg.get("bigip", {})
     audit_cfg = raw_cfg.get("audit", {})
+    gitlab_cfg = raw_cfg.get("gitlab", {})
 
     # Resolve parameters
     host     = _resolve(args.host,     "BIGIP_HOST", bigip_cfg.get("host"))
@@ -248,6 +277,45 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     verbose = args.verbose
 
+    # GitLab-backed policy state settings
+    gitlab_repo_url = _resolve(
+        args.gitlab_repo_url,
+        "GITLAB_REPO_URL",
+        gitlab_cfg.get("repo_url"),
+    )
+    gitlab_local_dir = _resolve(
+        args.gitlab_local_dir,
+        "GITLAB_LOCAL_DIR",
+        gitlab_cfg.get("local_dir"),
+        "./policy_state_repo",
+    )
+    gitlab_branch = _resolve(
+        args.gitlab_branch,
+        "GITLAB_BRANCH",
+        gitlab_cfg.get("branch"),
+        "main",
+    )
+    _raw_gitlab_auto_push = _resolve(
+        args.gitlab_auto_push,
+        "GITLAB_AUTO_PUSH",
+        gitlab_cfg.get("auto_push"),
+        False,
+    )
+    _raw_gitlab_update_sot = _resolve(
+        args.gitlab_update_source_truth,
+        "GITLAB_UPDATE_SOURCE_TRUTH",
+        gitlab_cfg.get("update_source_truth"),
+        False,
+    )
+    if isinstance(_raw_gitlab_auto_push, str):
+        gitlab_auto_push = _raw_gitlab_auto_push.lower() in ("1", "true", "yes")
+    else:
+        gitlab_auto_push = bool(_raw_gitlab_auto_push)
+    if isinstance(_raw_gitlab_update_sot, str):
+        gitlab_update_source_truth = _raw_gitlab_update_sot.lower() in ("1", "true", "yes")
+    else:
+        gitlab_update_source_truth = bool(_raw_gitlab_update_sot)
+
     # Setup logging first
     ensure_dir(output_dir)
     log = setup_logging(verbose, output_dir, audit_mode)
@@ -268,6 +336,26 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     logger.info("Audit mode: %s", audit_mode.upper())
 
+    # Optional GitLab state manager
+    gitlab_state: Optional[GitLabStateManager] = None
+    if gitlab_repo_url:
+        gitlab_state = GitLabStateManager(
+            repo_url=gitlab_repo_url,
+            local_dir=str(Path(gitlab_local_dir).resolve()),
+            branch=gitlab_branch,
+            auto_push=gitlab_auto_push,
+        )
+        synced = gitlab_state.sync_from_remote()
+        if synced:
+            logger.info(
+                "GitLab policy state enabled (branch=%s, local_dir=%s)",
+                gitlab_branch,
+                Path(gitlab_local_dir).resolve(),
+            )
+        else:
+            logger.warning("GitLab policy state repo unavailable; continuing without source-of-truth sync.")
+            gitlab_state = None
+
     # Validate concurrent_exports range
     try:
         concurrent = int(concurrent)
@@ -281,7 +369,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Password prompt if needed
     if not password:
         try:
-            password = getpass.getpass(f"Password for {username}@{host}: ")
+            print(f"Please provide the password for device: {host}.")
+            password = getpass.getpass(f"Password for user '{username}': ")
         except (KeyboardInterrupt, EOFError):
             print("\nAborted.")
             return 1
@@ -374,6 +463,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             partitions=partitions,
             device_hostname=device_hostname,
             device_mgmt_ip=device_mgmt_ip,
+            gitlab_state=gitlab_state,
+            gitlab_update_source_truth=gitlab_update_source_truth,
             logger=logger,
         )
     else:
@@ -386,6 +477,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             formats=formats,
             device_hostname=device_hostname,
             device_mgmt_ip=device_mgmt_ip,
+            gitlab_state=gitlab_state,
+            gitlab_update_source_truth=gitlab_update_source_truth,
             logger=logger,
         )
 
@@ -394,7 +487,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 def _run_waf_audit(
     client, exporter, all_partitions, baseline, output_dir, formats,
-    device_hostname, device_mgmt_ip, logger,
+    device_hostname, device_mgmt_ip, gitlab_state, gitlab_update_source_truth, logger,
 ) -> int:
     """Run the existing ASM/AWAF policy audit."""
     try:
@@ -439,6 +532,7 @@ def _run_waf_audit(
 
     # Compare and report
     all_results = []
+    sot_results = []
     total = len(successes)
     iterable = successes
 
@@ -478,6 +572,33 @@ def _run_waf_audit(
         )
         all_results.append(cmp_result)
 
+        if gitlab_state is not None:
+            sot_baseline, sot_name = gitlab_state.load_waf_source_of_truth(policy["fullPath"])
+            if sot_baseline is not None:
+                try:
+                    sot_cmp_result = compare_policies(
+                        baseline=sot_baseline,
+                        target=target_data,
+                        policy_meta=meta,
+                        baseline_name=sot_name,
+                        virtual_servers=policy.get("virtual_servers", []),
+                        device_hostname=device_hostname,
+                        device_mgmt_ip=device_mgmt_ip,
+                        asm_audit_logs=_fetch_recent_policy_audit_logs(
+                            client=client,
+                            policy_id=policy.get("id", ""),
+                            logger=logger,
+                            limit=10,
+                        ),
+                    )
+                    sot_results.append(sot_cmp_result)
+                except Exception as exc:
+                    logger.warning(
+                        "Source-of-truth comparison failed for %s: %s",
+                        policy["fullPath"],
+                        exc,
+                    )
+
         if "markdown" in formats:
             generate_markdown(cmp_result, output_dir)
         # HTML is generated once as an interactive multi-policy dashboard.
@@ -489,6 +610,41 @@ def _run_waf_audit(
         summary_formats = [f for f in formats if f != "html"]
         if summary_formats:
             generate_summary_reports(all_results, output_dir, summary_formats)
+
+    if sot_results:
+        sot_output_dir = str(Path(output_dir) / "source_of_truth")
+        for r in sot_results:
+            if "markdown" in formats:
+                generate_markdown(r, sot_output_dir)
+        if "html" in formats:
+            generate_html_dashboard(sot_results, sot_output_dir)
+        summary_formats = [f for f in formats if f != "html"]
+        if summary_formats:
+            generate_summary_reports(sot_results, sot_output_dir, summary_formats)
+        logger.info(
+            "Generated %d source-of-truth comparison report(s) under %s",
+            len(sot_results),
+            Path(output_dir) / "source_of_truth" / "reports",
+        )
+
+    if gitlab_state is not None:
+        gitlab_state.archive_run(
+            mode="waf",
+            output_dir=output_dir,
+            baseline_path=baseline,
+            device_hostname=device_hostname,
+            device_mgmt_ip=device_mgmt_ip,
+            audited_count=len(all_results),
+            failure_count=len(failures),
+        )
+        if gitlab_update_source_truth:
+            gitlab_state.update_waf_source_of_truth(successes)
+        gitlab_state.commit_and_push(
+            commit_message=(
+                f"WAF audit sync for {device_hostname or device_mgmt_ip} "
+                f"({len(all_results)} audited, {len(failures)} failed exports)"
+            )
+        )
 
     client.close()
     return _print_summary(
@@ -506,7 +662,8 @@ def _run_waf_audit(
 
 def _run_bot_audit(
     client, all_partitions, baseline_data, baseline_name, output_dir, formats,
-    partitions, device_hostname, device_mgmt_ip, logger,
+    partitions, device_hostname, device_mgmt_ip, gitlab_state,
+    gitlab_update_source_truth, logger,
 ) -> int:
     """Run the Bot Defense profile audit."""
     auditor = BotDefenseAuditor(
@@ -549,6 +706,7 @@ def _run_bot_audit(
 
     # Compare and report
     all_results = []
+    sot_results = []
     total = len(successes)
     iterable = successes
 
@@ -576,6 +734,27 @@ def _run_bot_audit(
 
         all_results.append(cmp_result)
 
+        if gitlab_state is not None:
+            sot_baseline, sot_name = gitlab_state.load_bot_source_of_truth(profile_meta["fullPath"])
+            if sot_baseline is not None:
+                try:
+                    sot_cmp_result = compare_bot_profiles(
+                        baseline=sot_baseline,
+                        target=profile_data,
+                        profile_meta=profile_meta,
+                        baseline_name=sot_name,
+                        device_hostname=device_hostname,
+                        device_mgmt_ip=device_mgmt_ip,
+                        virtual_servers=profile_meta.get("virtual_servers", []),
+                    )
+                    sot_results.append(sot_cmp_result)
+                except Exception as exc:
+                    logger.warning(
+                        "Source-of-truth comparison failed for %s: %s",
+                        profile_meta["fullPath"],
+                        exc,
+                    )
+
         if "markdown" in formats:
             generate_markdown(cmp_result, output_dir)
         # HTML is generated once as an interactive multi-profile dashboard.
@@ -587,6 +766,41 @@ def _run_bot_audit(
         summary_formats = [f for f in formats if f != "html"]
         if summary_formats:
             generate_summary_reports(all_results, output_dir, summary_formats)
+
+    if sot_results:
+        sot_output_dir = str(Path(output_dir) / "source_of_truth")
+        for r in sot_results:
+            if "markdown" in formats:
+                generate_markdown(r, sot_output_dir)
+        if "html" in formats:
+            generate_html_dashboard(sot_results, sot_output_dir)
+        summary_formats = [f for f in formats if f != "html"]
+        if summary_formats:
+            generate_summary_reports(sot_results, sot_output_dir, summary_formats)
+        logger.info(
+            "Generated %d source-of-truth comparison report(s) under %s",
+            len(sot_results),
+            Path(output_dir) / "source_of_truth" / "reports",
+        )
+
+    if gitlab_state is not None:
+        gitlab_state.archive_run(
+            mode="bot",
+            output_dir=output_dir,
+            baseline_path=baseline_name,
+            device_hostname=device_hostname,
+            device_mgmt_ip=device_mgmt_ip,
+            audited_count=len(all_results),
+            failure_count=len(failures),
+        )
+        if gitlab_update_source_truth:
+            gitlab_state.update_bot_source_of_truth(successes)
+        gitlab_state.commit_and_push(
+            commit_message=(
+                f"Bot Defense audit sync for {device_hostname or device_mgmt_ip} "
+                f"({len(all_results)} audited, {len(failures)} failed fetches)"
+            )
+        )
 
     return _print_summary(
         all_results=all_results,
