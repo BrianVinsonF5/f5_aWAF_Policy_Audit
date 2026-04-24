@@ -1816,16 +1816,19 @@ def _html_violations_table(violations: List[dict], baseline_violations: List[dic
         return f"<span class='badge badge-{cls}'>{label}</span>"
 
     def _match_badge(v: dict | None, bv: dict | None) -> str:
-        if v is None and bv is not None:
-            return "<span class='badge badge-critical'>Missing in Target</span>"
-        if bv is None:
+        # Allowed values for "Matches Baseline": Match | No Match | N/A
+        # N/A applies when a target violation exists but is not defined in baseline.
+        if v is not None and bv is None:
             return "<span class='badge badge-info'>N/A</span>"
-        if v is None:
-            return "<span class='badge badge-unknown'>Unknown</span>"
+        if v is None and bv is not None:
+            return "<span class='badge badge-fail'>No Match</span>"
+        if v is None and bv is None:
+            return "<span class='badge badge-info'>N/A</span>"
+
         attrs = ["alarm", "block", "learn"]
         differs = any(v.get(a) != bv.get(a) for a in attrs)
         if differs:
-            return "<span class='badge badge-fail'>Mismatch</span>"
+            return "<span class='badge badge-fail'>No Match</span>"
         return "<span class='badge badge-pass'>Match</span>"
 
     def _baseline_settings(bv: dict | None) -> str:
