@@ -721,9 +721,9 @@ def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = Fal
     if not is_bot:
         # WAF Violations Status — collapsible, shown above Policy Builder
         if result.violations:
+            parts.append(f"<h2>WAF Violations Status ({len(result.violations)})</h2>")
             parts.append(
-                "<details><summary><h2 style='display:inline;font-size:1em'>"
-                f"WAF Violations Status ({len(result.violations)})</h2></summary>"
+                "<details><summary>Show/Hide Violation Details</summary>"
                 "<div class='details-body'>"
             )
             parts.append(_html_violations_table(result.violations, result.baseline_violations))
@@ -1920,9 +1920,9 @@ def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = Fal
 
     if not is_bot:
         if result.violations:
+            parts.append(f"<h2>WAF Violations Status ({len(result.violations)})</h2>")
             parts.append(
-                "<details><summary><h2 style='display:inline;font-size:1em'>"
-                f"WAF Violations Status ({len(result.violations)})</h2></summary>"
+                "<details><summary>Show/Hide Violation Details</summary>"
                 "<div class='details-body'>"
             )
             parts.append(_html_violations_table(result.violations, result.baseline_violations))
