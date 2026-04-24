@@ -763,7 +763,7 @@ def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = Fal
         if not items:
             continue
         parts.append(
-            f"<details open><summary>"
+            f"<details><summary>"
             f"<span class='badge badge-{badge_cls}'>{sev_label}</span>"
             f"&nbsp;({len(items)})</summary>"
             f"<div class='details-body'>"
@@ -1028,7 +1028,7 @@ def _html_signature_sets_table(result: ComparisonResult) -> str:
 
     return (
         f"<h2>Attack Signature Sets</h2>"
-        f"<details open><summary>Signature Set Inventory ({count_label})</summary>"
+        f"<details><summary>Signature Set Inventory ({count_label})</summary>"
         f"<div class='details-body'>{body}</div></details>"
     )
 
@@ -1071,7 +1071,7 @@ def _html_ltm_policy_section(vs_list: List[Dict], is_bot: bool = False) -> str:
         "Rules from LTM policies that map host conditions to WAF security policies on each virtual server."
     )
     parts = [
-        f"<details open><summary>"
+        f"<details><summary>"
         f"<h2 style='display:inline;font-size:1em'>"
         f"{section_title}"
         f"</h2></summary>"
@@ -1197,7 +1197,7 @@ def _html_policy_builder_status(result: ComparisonResult) -> str:
         )
 
     table = (
-        "<details open><summary>Policy Builder Settings Comparison</summary>"
+        "<details><summary>Policy Builder Settings Comparison</summary>"
         "<div class='details-body'>"
         "<table class='findings'>"
         "<thead><tr>"
@@ -1268,7 +1268,7 @@ def _html_asm_policy_changes(result: ComparisonResult) -> str:
 
     return (
         "<h2>Recent ASM Security Policy Changes</h2>"
-        "<details open><summary>Policy Audit Log (last 10 entries)</summary>"
+        "<details><summary>Policy Audit Log (last 10 entries)</summary>"
         f"<div class='details-body'>{body}</div></details>"
     )
 
@@ -1339,7 +1339,7 @@ def _html_bot_mitigation_table(result: ComparisonResult) -> str:
         )
 
     table = (
-        "<details open><summary>Bot Mitigation Settings Comparison</summary>"
+        "<details><summary>Bot Mitigation Settings Comparison</summary>"
         "<div class='details-body'>"
         "<table class='findings'>"
         "<thead><tr>"
@@ -1404,7 +1404,7 @@ def _html_bot_signature_enforcement_table(result: ComparisonResult) -> str:
     )
     return (
         f"<h2>Signature Enforcement</h2>"
-        f"<details open><summary>Signature Category Inventory ({n})</summary>"
+        f"<details><summary>Signature Category Inventory ({n})</summary>"
         f"<div class='details-body'>{body}</div></details>"
     )
 
@@ -1463,7 +1463,7 @@ def _html_bot_whitelist_table(result: ComparisonResult) -> str:
     )
     return (
         f"<h2>Whitelist (Trusted Sources)</h2>"
-        f"<details open><summary>Whitelist Entry Inventory ({n})</summary>"
+        f"<details><summary>Whitelist Entry Inventory ({n})</summary>"
         f"<div class='details-body'>{body}</div></details>"
     )
 
@@ -1517,7 +1517,7 @@ def _html_bot_browsers_table(result: ComparisonResult) -> str:
     )
     return (
         f"<h2>Browsers</h2>"
-        f"<details open><summary>Browser Entry Inventory ({n})</summary>"
+        f"<details><summary>Browser Entry Inventory ({n})</summary>"
         f"<div class='details-body'>{body}</div></details>"
     )
 
@@ -1565,7 +1565,7 @@ def _html_bot_overrides_table(result: ComparisonResult) -> str:
     )
     return (
         f"<h2>Bot Defense Overrides</h2>"
-        f"<details open><summary>Override Entry Inventory ({n})</summary>"
+        f"<details><summary>Override Entry Inventory ({n})</summary>"
         f"<div class='details-body'>{body}</div></details>"
     )
 
@@ -1961,7 +1961,7 @@ def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = Fal
         if not items:
             continue
         parts.append(
-            f"<details open><summary>"
+            f"<details><summary>"
             f"<span class='badge badge-{badge_cls}'>{sev_label}</span>"
             f"&nbsp;({len(items)})</summary>"
             f"<div class='details-body'>"
