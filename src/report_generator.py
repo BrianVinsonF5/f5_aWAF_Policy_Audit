@@ -77,10 +77,10 @@ def generate_markdown(result: ComparisonResult, output_dir: str) -> Path:
     lines: List[str] = []
     _md_header(lines, result)
     if not is_bot:
+        _md_violations_table(lines, result)
+        _md_policy_builder_status(lines, result)
         _md_asm_policy_changes(lines, result)
         _md_signature_sets_table(lines, result)
-        _md_policy_builder_status(lines, result)
-        _md_violations_table(lines, result)
     else:
         _md_bot_mitigation_settings(lines, result)
         _md_bot_signature_enforcement(lines, result)
@@ -719,13 +719,7 @@ def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = Fal
         parts.append(ltm_section)
 
     if not is_bot:
-        # Policy Builder status banner + settings table
-        parts.append(_html_policy_builder_status(result))
-
-        # Attack Signature Sets inventory — always shown, after Policy Builder
-        parts.append(_html_signature_sets_table(result))
-
-        # WAF Violations Status — collapsible, directly after Policy Builder
+        # WAF Violations Status — collapsible, shown above Policy Builder
         if result.violations:
             parts.append(
                 "<details><summary><h2 style='display:inline;font-size:1em'>"
@@ -734,6 +728,12 @@ def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = Fal
             )
             parts.append(_html_violations_table(result.violations, result.baseline_violations))
             parts.append("</div></details>")
+
+        # Policy Builder status banner + settings table
+        parts.append(_html_policy_builder_status(result))
+
+        # Attack Signature Sets inventory — always shown, after Policy Builder
+        parts.append(_html_signature_sets_table(result))
     else:
         # Bot Defense sections: Mitigation Settings, Signature Enforcement, Whitelist, Browsers
         bot_mit = _html_bot_mitigation_table(result)
@@ -1919,10 +1919,6 @@ def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = Fal
         parts.append(ltm_section)
 
     if not is_bot:
-        parts.append(_html_policy_builder_status(result))
-        parts.append(_html_signature_sets_table(result))
-        parts.append(_html_asm_policy_changes(result))
-
         if result.violations:
             parts.append(
                 "<details><summary><h2 style='display:inline;font-size:1em'>"
@@ -1931,6 +1927,10 @@ def _build_policy_report_fragment(result: ComparisonResult, embedded: bool = Fal
             )
             parts.append(_html_violations_table(result.violations, result.baseline_violations))
             parts.append("</div></details>")
+
+        parts.append(_html_policy_builder_status(result))
+        parts.append(_html_signature_sets_table(result))
+        parts.append(_html_asm_policy_changes(result))
         # Bot Defense sections: Mitigation Settings, Signature Enforcement, Whitelist, Browsers, Overrides
     else:
         bot_mit = _html_bot_mitigation_table(result)
