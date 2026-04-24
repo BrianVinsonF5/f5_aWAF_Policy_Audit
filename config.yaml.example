@@ -8,8 +8,15 @@ bigip:
 
 audit:
   baseline_policy: "./baseline/corporate_baseline.xml"
-  output_dir: "./output"
+  output_dir: "../f5_aWAF_Policy_Audit_output"
   report_format: "both"       # html, markdown, both
   export_format: "xml"
   concurrent_exports: 3       # 1–20
   partitions: []              # empty = all partitions
+
+gitlab:
+  repo_url: "https://gitlab.example.com/netsec/policy-state.git"
+  local_dir: "../f5_aWAF_Policy_Audit_policy_state_repo"
+  branch: "main"
+  auto_push: false            # true = commit + push after each run
+  update_source_truth: false  # true = replace source_of_truth files with latest exports

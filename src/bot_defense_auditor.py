@@ -9,6 +9,7 @@ Profiles are fetched via the iControl REST API:
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from .bigip_client import BigIPClient
 from .policy_exporter import _parse_destination, _extract_host_conditions
@@ -17,6 +18,21 @@ from .utils import get_logger, ensure_dir
 _BD_PROFILE_EP  = "/mgmt/tm/security/bot-defense/profile"
 _LTM_VIRTUAL_EP = "/mgmt/tm/ltm/virtual"
 _LTM_POLICY_EP  = "/mgmt/tm/ltm/policy"
+
+# Bot Defense profile override/reference collections that should always be
+# expanded and captured for audit diffing/reporting.
+_BD_OVERRIDE_REF_KEYS = [
+    "anomalyCategoryOverridesReference",
+    "anomalyOverridesReference",
+    "classOverridesReference",
+    "externalDomainsReference",
+    "microServicesReference",
+    "signatureCategoryOverridesReference",
+    "signatureOverridesReference",
+    "siteDomainsReference",
+    "stagedSignaturesReference",
+    "whitelistReference",
+]
 
 
 def _extract_bot_defense_action(rule: Dict) -> str:
@@ -344,6 +360,7 @@ class BotDefenseAuditor:
 
         self.log.info("Fetching Bot Defense profile: %s", full_path)
         data = self.client.get(api_path, params={"expandSubcollections": "true"})
+        self._expand_override_collections(data)
 
         # Persist to disk for audit trail
         safe_name = full_path.strip("/").replace("/", "_")
@@ -353,6 +370,58 @@ class BotDefenseAuditor:
 
         profile["local_path"] = str(local_path)
         return data
+
+    def _expand_override_collections(self, profile_data: Dict) -> None:
+        """
+        Ensure override-related Bot Defense sub-collections are populated.
+
+        ``expandSubcollections=true`` may not always return ``items`` for every
+        reference collection. For each known override reference, this performs a
+        best-effort fetch via its ``link`` and hydrates ``...Reference.items``.
+        """
+        for ref_key in _BD_OVERRIDE_REF_KEYS:
+            ref = profile_data.get(ref_key)
+            if not isinstance(ref, dict):
+                continue
+
+            # Already expanded with items.
+            if isinstance(ref.get("items"), list):
+                continue
+
+            link = ref.get("link")
+            if not link:
+                continue
+
+            parsed = urlparse(link)
+            api_path = parsed.path
+            if not api_path:
+                continue
+
+            params = {"expandSubcollections": "true"}
+            if parsed.query:
+                for pair in parsed.query.split("&"):
+                    if "=" not in pair:
+                        continue
+                    k, v = pair.split("=", 1)
+                    if k and v:
+                        params[k] = v
+
+            try:
+                sub_data = self.client.get(api_path, params=params)
+            except Exception as exc:
+                self.log.debug(
+                    "Could not expand Bot Defense sub-collection %s (%s): %s",
+                    ref_key,
+                    api_path,
+                    exc,
+                )
+                continue
+
+            items = sub_data.get("items") if isinstance(sub_data, dict) else None
+            if not isinstance(items, list):
+                items = []
+
+            ref["items"] = items
 
     def fetch_all(
         self, profiles: List[Dict]

@@ -12,6 +12,12 @@ REST API and performs read-only compliance audits in two modes:
   against a provided baseline JSON profile, and generates a per-profile
   compliance report.
 
+It can also optionally sync a **GitLab-backed policy-state repository** used as:
+
+- Source-of-truth policy/profile files (per app/policy path)
+- Historical run archive (exports, reports, and run manifest)
+- Optional update target for promoting current device state into source-of-truth
+
 > **Read-Only Guarantee** — This tool never creates, modifies, deletes, or
 > applies any configuration on the BIG-IP device. It performs only GET requests
 > (plus the POST to initiate a WAF export task, which is a read operation) and
@@ -62,7 +68,8 @@ module to be licensed and provisioned.
 
 - Discovers all Bot Defense profiles via `GET /mgmt/tm/security/bot-defense/profile`
 - Fetches the full profile JSON for each discovered profile
-- Saves each profile JSON to `output/bot-defense/` for the audit trail
+- Expands referenced sub-collections (signatures, whitelist, overrides, etc.) for richer comparison coverage
+- Saves each profile JSON to `<output-dir>/bot-defense/` for the audit trail
 - Compares the fetched profile against a baseline JSON file
 - Baseline file must be a JSON export of a Bot Defense profile (see below)
 
@@ -179,22 +186,42 @@ These flags are mutually exclusive. If neither is supplied, `--WAF` is the defau
 |----------|---------|---------|-------------|
 | `--host` | `BIGIP_HOST` | required | BIG-IP management IP or FQDN |
 | `--username` | `BIGIP_USER` | required | Admin username |
-| `--password` | `BIGIP_PASS` | (prompt) | Password (env var or interactive prompt only — not accepted in config file) |
 | `--login-provider` | `BIGIP_LOGIN_PROVIDER` | `tmos` | BIG-IP login provider (RADIUS/LDAP users may need to change this) |
 | `--verify-ssl` / `--no-verify-ssl` | `VERIFY_SSL` | `true` | TLS certificate verification |
+
+> Password input is intentionally **not** exposed as a CLI argument. Use `BIGIP_PASS`
+> or the interactive prompt.
 
 ### Audit Options
 
 | Argument | Env Var | Default | Description |
 |----------|---------|---------|-------------|
 | `--baseline` | `BASELINE_POLICY` | required | Path to baseline file (XML for `--WAF`, JSON for `--BOT`) |
-| `--output-dir` | `OUTPUT_DIR` | `./output` | Output directory for exports and reports |
-| `--format` | `REPORT_FORMAT` | `both` | `html`, `markdown`, or `both` |
+| `--output-dir` | `OUTPUT_DIR` | `../<repo_name>_output` | Output directory for exports and reports |
+| `--format` | `REPORT_FORMAT` | `both` | `html` = single interactive dashboard, `markdown` = per-policy/profile reports + summary, `both` = dashboard + markdown reports |
 | `--partitions` | `PARTITIONS` | (all) | Comma-separated partition list to audit |
 | `--export-format` | `EXPORT_FORMAT` | `xml` | WAF policy export format: `xml` or `json` |
 | `--concurrent-exports` | `CONCURRENT_EXPORTS` | `3` | Max parallel WAF export tasks (1–20) |
 | `-v` / `--verbose` | — | `false` | Enable debug logging |
 | `--config` | — | `config.yaml` | Path to YAML config file |
+
+### GitLab Policy-State Options (Optional)
+
+| Argument | Env Var | Default | Description |
+|----------|---------|---------|-------------|
+| `--gitlab-repo-url` | `GITLAB_REPO_URL` | (disabled) | GitLab repo URL that stores source-of-truth + historical runs |
+| `--gitlab-local-dir` | `GITLAB_LOCAL_DIR` | `../<repo_name>_policy_state_repo` | Local clone path used for sync/compare/archive |
+| `--gitlab-branch` | `GITLAB_BRANCH` | `main` | Git branch to pull/commit against |
+| `--gitlab-auto-push` / `--no-gitlab-auto-push` | `GITLAB_AUTO_PUSH` | `false` | Whether commits are pushed automatically after each run |
+| `--gitlab-update-source-truth` / `--no-gitlab-update-source-truth` | `GITLAB_UPDATE_SOURCE_TRUTH` | `false` | Whether current exports overwrite `source_of_truth/` files |
+
+When `--gitlab-repo-url` is supplied, the tool will:
+
+1. Clone/pull the configured branch to the local repo directory.
+2. Compare running policies against your provided baseline (existing behavior).
+3. Additionally compare running policies against `source_of_truth/` files from GitLab (if present).
+4. Archive run artifacts into `runs/<mode>/<timestamp>/` inside the repo.
+5. Optionally refresh `source_of_truth/` with the latest exports, then commit (and optionally push).
 
 Config file values are overridden by environment variables, which are overridden
 by CLI arguments.
@@ -203,39 +230,72 @@ by CLI arguments.
 
 ## Output Files
 
-After a run, the `--output-dir` (default `./output`) will contain:
+After a run, the `--output-dir` (default: sibling folder outside the repo, `../<repo_name>_output`) will contain:
 
 **WAF mode:**
 
 ```
-output/
+<output-dir>/
 ├── audit_20260303T143012.log          # Full debug log
 ├── exports/
 │   ├── Common_app1_waf_20260303T1430.xml
 │   └── Common_app2_waf_20260303T1431.xml
 └── reports/
-    ├── app1_waf_audit_report.md       # Per-policy Markdown report
-    ├── app1_waf_audit_report.html     # Per-policy HTML report (self-contained)
-    ├── app2_waf_audit_report.md
-    ├── app2_waf_audit_report.html
-    ├── summary_audit_report.md        # Cross-policy summary
-    └── summary_audit_report.html
+    ├── WAF_audit_dashboard.html        # Single interactive multi-policy HTML dashboard
+    ├── WAF_app1_waf_audit_report.md    # Per-policy Markdown report
+    ├── WAF_app2_waf_audit_report.md
+    └── WAF_summary_audit_report.md     # Cross-policy summary (Markdown)
 ```
 
 **Bot Defense mode:**
 
 ```
-output/
+<output-dir>/
 ├── audit_20260303T143012.log
 ├── bot-defense/
 │   ├── Common_my_bot_profile.json     # Raw profile JSON (audit trail)
 │   └── App1_strict_bot.json
 └── reports/
-    ├── my_bot_profile_audit_report.md
-    ├── my_bot_profile_audit_report.html
-    ├── summary_audit_report.md
-    └── summary_audit_report.html
+    ├── BOT_audit_dashboard.html        # Single interactive multi-profile HTML dashboard
+    ├── BOT_my_bot_profile_audit_report.md
+    ├── BOT_strict_bot_audit_report.md
+    └── BOT_summary_audit_report.md
 ```
+
+Notes:
+- HTML output is generated as one interactive dashboard file per run (`WAF_audit_dashboard.html` or `BOT_audit_dashboard.html`).
+- Markdown output is generated per policy/profile, plus a summary Markdown report.
+- If GitLab source-of-truth comparison is enabled and source files exist, additional reports are written under `<output-dir>/source_of_truth/reports/`.
+
+## GitLab Policy-State Repository Layout
+
+Recommended structure in your GitLab repo:
+
+```
+policy-state-repo/
+├── source_of_truth/
+│   ├── waf/
+│   │   └── <partition>/<policy>.xml
+│   └── bot/
+│       └── <partition>/<profile>.json
+└── runs/
+    ├── waf/
+    │   └── <timestamp>/
+    │       ├── exports/
+    │       ├── reports/
+    │       ├── source_of_truth_reports/
+    │       └── manifest.json
+    └── bot/
+        └── <timestamp>/
+            ├── bot-defense/
+            ├── reports/
+            ├── source_of_truth_reports/
+            └── manifest.json
+```
+
+This model supports multiple BIG-IP devices for the same applications while
+keeping one GitLab source-of-truth. Each run compares the active device config
+to baseline + GitLab source-of-truth and stores the full evidence trail in Git.
 
 ---
 
@@ -320,7 +380,7 @@ src/
 ├── policy_comparator.py     # WAF diff engine → ComparisonResult + DiffItem dataclasses
 ├── bot_defense_auditor.py   # Bot Defense profile discovery + REST fetch workflow
 ├── bot_defense_comparator.py # Bot Defense diff engine (JSON profile comparison)
-├── report_generator.py      # Markdown + self-contained HTML reports (shared by both modes)
+├── report_generator.py      # Markdown reports + interactive HTML dashboard + summary reports
 └── utils.py                 # Logging, retry decorator, filename helpers
 ```
 

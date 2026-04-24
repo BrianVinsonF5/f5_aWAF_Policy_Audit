@@ -534,8 +534,7 @@ class PolicyExporter:
             self._EXPORT_TASK_EP,
             data={
                 "filename": filename,
-                "format": self.export_format,
-                "minimal": False,
+                "minimal": True,
                 "policyReference": {
                     "link": f"https://localhost/mgmt/tm/asm/policies/{policy_id}"
                 },
