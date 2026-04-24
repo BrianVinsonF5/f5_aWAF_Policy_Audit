@@ -69,7 +69,7 @@ module to be licensed and provisioned.
 - Discovers all Bot Defense profiles via `GET /mgmt/tm/security/bot-defense/profile`
 - Fetches the full profile JSON for each discovered profile
 - Expands referenced sub-collections (signatures, whitelist, overrides, etc.) for richer comparison coverage
-- Saves each profile JSON to `output/bot-defense/` for the audit trail
+- Saves each profile JSON to `<output-dir>/bot-defense/` for the audit trail
 - Compares the fetched profile against a baseline JSON file
 - Baseline file must be a JSON export of a Bot Defense profile (see below)
 
@@ -197,7 +197,7 @@ These flags are mutually exclusive. If neither is supplied, `--WAF` is the defau
 | Argument | Env Var | Default | Description |
 |----------|---------|---------|-------------|
 | `--baseline` | `BASELINE_POLICY` | required | Path to baseline file (XML for `--WAF`, JSON for `--BOT`) |
-| `--output-dir` | `OUTPUT_DIR` | `./output` | Output directory for exports and reports |
+| `--output-dir` | `OUTPUT_DIR` | `../<repo_name>_output` | Output directory for exports and reports |
 | `--format` | `REPORT_FORMAT` | `both` | `html` = single interactive dashboard, `markdown` = per-policy/profile reports + summary, `both` = dashboard + markdown reports |
 | `--partitions` | `PARTITIONS` | (all) | Comma-separated partition list to audit |
 | `--export-format` | `EXPORT_FORMAT` | `xml` | WAF policy export format: `xml` or `json` |
@@ -210,7 +210,7 @@ These flags are mutually exclusive. If neither is supplied, `--WAF` is the defau
 | Argument | Env Var | Default | Description |
 |----------|---------|---------|-------------|
 | `--gitlab-repo-url` | `GITLAB_REPO_URL` | (disabled) | GitLab repo URL that stores source-of-truth + historical runs |
-| `--gitlab-local-dir` | `GITLAB_LOCAL_DIR` | `./policy_state_repo` | Local clone path used for sync/compare/archive |
+| `--gitlab-local-dir` | `GITLAB_LOCAL_DIR` | `../<repo_name>_policy_state_repo` | Local clone path used for sync/compare/archive |
 | `--gitlab-branch` | `GITLAB_BRANCH` | `main` | Git branch to pull/commit against |
 | `--gitlab-auto-push` / `--no-gitlab-auto-push` | `GITLAB_AUTO_PUSH` | `false` | Whether commits are pushed automatically after each run |
 | `--gitlab-update-source-truth` / `--no-gitlab-update-source-truth` | `GITLAB_UPDATE_SOURCE_TRUTH` | `false` | Whether current exports overwrite `source_of_truth/` files |
@@ -230,12 +230,12 @@ by CLI arguments.
 
 ## Output Files
 
-After a run, the `--output-dir` (default `./output`) will contain:
+After a run, the `--output-dir` (default: sibling folder outside the repo, `../<repo_name>_output`) will contain:
 
 **WAF mode:**
 
 ```
-output/
+<output-dir>/
 ├── audit_20260303T143012.log          # Full debug log
 ├── exports/
 │   ├── Common_app1_waf_20260303T1430.xml
@@ -250,7 +250,7 @@ output/
 **Bot Defense mode:**
 
 ```
-output/
+<output-dir>/
 ├── audit_20260303T143012.log
 ├── bot-defense/
 │   ├── Common_my_bot_profile.json     # Raw profile JSON (audit trail)
@@ -265,7 +265,7 @@ output/
 Notes:
 - HTML output is generated as one interactive dashboard file per run (`WAF_audit_dashboard.html` or `BOT_audit_dashboard.html`).
 - Markdown output is generated per policy/profile, plus a summary Markdown report.
-- If GitLab source-of-truth comparison is enabled and source files exist, additional reports are written under `output/source_of_truth/reports/`.
+- If GitLab source-of-truth comparison is enabled and source files exist, additional reports are written under `<output-dir>/source_of_truth/reports/`.
 
 ## GitLab Policy-State Repository Layout
 

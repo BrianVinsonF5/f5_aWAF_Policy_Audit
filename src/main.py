@@ -43,6 +43,9 @@ import urllib3
 
 
 _PASS_THRESHOLD = 90.0
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_OUTPUT_DIR = str((_REPO_ROOT.parent / f"{_REPO_ROOT.name}_output").resolve())
+_DEFAULT_GITLAB_LOCAL_DIR = str((_REPO_ROOT.parent / f"{_REPO_ROOT.name}_policy_state_repo").resolve())
 
 
 # ── Config loading ─────────────────────────────────────────────────────────────
@@ -110,7 +113,7 @@ def _build_parser() -> argparse.ArgumentParser:
                        "XML for --WAF mode; JSON for --BOT mode."
                    ))
     p.add_argument("--output-dir", metavar="DIR", default=None,
-                   help="Output directory for exports and reports (default: ./output)")
+                   help=f"Output directory for exports and reports (default: {_DEFAULT_OUTPUT_DIR})")
     p.add_argument("--format", dest="report_format",
                    choices=["html", "markdown", "both"], default=None,
                    help="Report format (default: both)")
@@ -259,7 +262,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     baseline = _resolve(args.baseline, "BASELINE_POLICY", audit_cfg.get("baseline_policy"))
     output_dir = _resolve(args.output_dir, "OUTPUT_DIR",
-                          audit_cfg.get("output_dir"), "./output")
+                          audit_cfg.get("output_dir"), _DEFAULT_OUTPUT_DIR)
     report_format = _resolve(args.report_format, "REPORT_FORMAT",
                              audit_cfg.get("report_format"), "both")
     export_format = _resolve(args.export_format, "EXPORT_FORMAT",
@@ -292,7 +295,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         args.gitlab_local_dir,
         "GITLAB_LOCAL_DIR",
         gitlab_cfg.get("local_dir"),
-        "./policy_state_repo",
+        _DEFAULT_GITLAB_LOCAL_DIR,
     )
     gitlab_branch = _resolve(
         args.gitlab_branch,
